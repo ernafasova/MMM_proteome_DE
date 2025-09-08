@@ -1,0 +1,865 @@
+---
+title: "phos_female_qc"
+format: html
+---
+
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_new.rda"))
+load(here::here("data/metadata_phos_F.rda"))
+```
+
+
+# functions
+```{r}
+# For PCA
+
+plot_pca <- function(
+  data,
+  color_var,
+  shape_var   = NULL,
+  color_vals  = NULL,      # manual colors
+  palette_name = "Set1",   # Brewer palette for discrete colors
+  plot_title  = NULL,
+  ellipse     = TRUE       # draw ellipses?
+) {
+  # treat color/shape variables as factors for discrete plotting
+  data[[color_var]] <- as.factor(data[[color_var]])
+  if (!is.null(shape_var)) {
+    data[[shape_var]] <- as.factor(data[[shape_var]])
+  }
+
+  # aesthetics
+  mapping <- aes(
+    x = PC1,
+    y = PC2,
+    color = .data[[color_var]]
+  )
+  if (!is.null(shape_var)) {
+    mapping <- aes(
+      x = PC1,
+      y = PC2,
+      color = .data[[color_var]],
+      shape = .data[[shape_var]]
+    )
+  }
+
+  # base plot
+  p <- ggplot(data, mapping) +
+    geom_point(size = 3.5, alpha = 0.7) +
+    labs(
+      title    = plot_title,
+      subtitle = paste("based on", n_nona, "sites out of", n_original),
+      x        = paste0("PC1 (", pca_var_perc[1], "%)"),
+      y        = paste0("PC2 (", pca_var_perc[2], "%)")
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+
+  # optional ellipses
+  if (ellipse) {
+    p <- p + stat_ellipse(
+      aes(
+        group = .data[[color_var]],
+        fill  = .data[[color_var]]
+      ),
+      geom        = "path",
+      show.legend = FALSE
+    )
+  }
+
+  # color scale
+  if (!is.null(color_vals)) {
+    p <- p + scale_color_manual(values = color_vals)
+  } else {
+    p <- p + scale_color_brewer(palette = palette_name)
+  }
+
+  print(p)
+}
+
+
+
+################################ limma main results 
+# For limma
+get_limma_results <- function(fit_obj, coef_name, contrast_label, alpha = 0.05) {
+  
+  # Extract results table
+  top_table <- limma::topTable(
+    fit_obj,
+    coef          = coef_name,
+    adjust.method = "BH",
+    sort.by       = "logFC",
+    number        = Inf
+  ) %>%
+    rownames_to_column("Protein")
+  
+  # Filter significant hits
+  sig <- top_table %>%
+    filter(adj.P.Val < alpha) %>%
+    drop_na()
+  
+  up   <- sig %>% filter(logFC > 0)
+  down <- sig %>% filter(logFC < 0)
+  
+  # Console summary
+  message("\n---- ", contrast_label, " ----")
+  message("Total significant: ", nrow(sig))
+  message("UP: ", nrow(up), " | DOWN: ", nrow(down))
+  
+  # Return result lists
+  return(list(
+    top_table = top_table,
+    sig       = sig,
+    up        = up,
+    down      = down
+  ))
+}
+
+```
+
+
+# load raw data
+```{r}
+raw_phos_F <- readr::read_tsv(here::here("data-raw/mmm_female_phos_collapsed_10082025.txt")) # 56290 rows
+raw_phos_F <- raw_phos[-1, ]
+rownames(raw_phos_F) <- NULL
+#colnames(raw_phos_F)
+any(duplicated(raw_phos_F$PTM_collapse_key)) # FALSE
+any(duplicated(raw_phos_F$PG.Genes)) # TRUE
+any(duplicated(raw_phos_F$PG.ProteinGroups)) # TRUE
+
+# samples are NOT ordered correctly 
+usethis::use_data(raw_phos_F, overwrite = T)
+```
+
+
+# modify raw data
+```{r}
+# create clean only quantitative proteomic matrix
+phos_F <- raw_phos_F %>%
+  dplyr::select(PTM_collapse_key, contains("202506")) %>%
+  column_to_rownames(var = "PTM_collapse_key") %>%
+  dplyr::mutate(across(everything(), as.numeric)) %>%
+  dplyr::mutate(across(everything(), ~ replace(., is.nan(.), NA))) %>%
+  dplyr::mutate_all(log2)
+
+
+# rename samples
+colnames(phos_F) <- sub(".*_(S\\d{3})_.*", "\\1", colnames(phos_F))
+colnames(phos_F)
+
+# add new sample id for phos
+dim(metadata_new) # 229 - 24
+metadata_new <- metadata_new %>%
+    mutate(phos_sample_id = str_c("S", str_pad(7:(7 + nrow(metadata_new) - 1), width = 3, pad = "0")))
+
+#table(metadata_new$phos_sample_id)
+
+metadata_phos_F <- metadata_new %>% 
+    mutate(phos_sample_id = as.character(phos_sample_id)) %>% 
+    filter(phos_sample_id %in% colnames(phos_F)) %>% 
+    arrange(match(phos_sample_id, colnames(phos_F)))
+
+
+metadata_phos_F <- metadata_phos_F %>%
+  dplyr::mutate(new_sample_id = paste0("S", seq_len(n())))
+
+
+all(colnames(phos_F) == metadata_phos_F$phos_sample_id)  # Should be TRUE
+colnames(phos_F) <- metadata_phos_F$new_sample_id
+
+usethis::use_data(phos_F, overwrite = T)
+usethis::use_data(metadata_phos_F, overwrite = T)
+```
+
+
+# STY
+```{r}
+aa_counts <- raw_phos_F %>%
+  dplyr::count(PTM_0_aa, name = "Count") %>%
+  dplyr::rename(Category = PTM_0_aa)
+
+# Calculate the unique protein count (using the robust method)
+protein_count <- n_distinct(raw_phos_F$PG.Genes)
+
+
+# Create a data frame for the protein count
+protein_df <- data.frame(
+  Category = "Unique Proteins",
+  Count = protein_count
+)
+
+# Combine the data frames
+plot_df <- bind_rows(aa_counts, protein_df)
+
+plot_df <- plot_df %>%
+  mutate(MainCategory = case_when(
+    Category %in% c("S", "T", "Y") ~ "Phosphosites",
+    TRUE ~ "Phosphoproteins"
+  ))
+
+
+plot_df$MainCategory <- factor(plot_df$MainCategory, levels = c("Phosphosites", "Phosphoproteins"))
+
+color_palette <- brewer.pal(n = 4, name = "Dark2")
+names(color_palette) <- levels(factor(plot_df$Category))
+
+final_plot_brewer <- ggplot(plot_df, aes(x = MainCategory, y = Count, fill = Category)) +
+  geom_col(width = 0.7) +
+  geom_text(
+    aes(label = Count),
+    position = position_stack(vjust = 0.5),
+    fontface = "bold",
+    size = 4,
+    color = "black"
+  ) +
+  scale_fill_manual(
+    name = NULL,
+    values = color_palette
+  ) +
+  labs(
+    title = "Distribution of Phosphosites",
+    x = NULL,
+    y = "Total Count"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    axis.text.x = element_text(face = "bold"),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.y = element_blank(),
+    legend.position = "right"
+  )
+
+print(final_plot_brewer)
+ggsave(file.path("doc", "final_plot_brewer.png"), plot = final_plot_brewer, width = 8, height = 5, dpi = 300, bg = "white")
+```
+
+# pca - outlier
+```{r}
+n_original <- nrow(phos_F) # 7642
+df_nona <- na.omit(phos_F) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "old_sample_id: ", sample_id,
+      "<br>new_sample_id: ", new_sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F$new_sample_id)
+
+
+  
+
+pca_day <- plot_pca(
+    data = pca_data, 
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, outlier s171 (n=113)")
+
+
+plotly::ggplotly(pca_day)
+
+
+ggsave(file.path("doc", "pca_day_outlier.png"), plot = pca_day, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Remove outlier
+```{r}
+phos_F_removeoutlier <- phos_F %>% 
+    dplyr::select(-S88) # s171 with old_sample_id
+
+colnames(phos_F_removeoutlier)
+dim(phos_F_removeoutlier)
+usethis::use_data(phos_F_removeoutlier, overwrite = T)
+
+
+############ align with metadata ###############################################
+metadata_phos_F_filtered <- metadata_phos_F %>%
+  filter(sample_id != "s171")
+
+print(metadata_phos_F_filtered$new_sample_id)
+print(colnames(phos_F_removeoutlier))
+
+comparison <- data.frame(
+  Metadata = metadata_phos_F_filtered$new_sample_id,
+  Data     = colnames(phos_F_removeoutlier)
+)
+
+# check if column names match metadata sample IDs in both value and order
+all(colnames(phos_F_removeoutlier) == metadata_phos_F_filtered$new_sample_id)
+
+usethis::use_data(metadata_phos_F_filtered, overwrite = T)
+```
+
+
+# Filter
+```{r}
+phos_F_removeoutlier_filt100 <- PhosR::selectOverallPercent(phos_F_removeoutlier, 1)
+phos_F_removeoutlier_filt70 <- PhosR::selectOverallPercent(phos_F_removeoutlier, 0.7) 
+phos_F_removeoutlier_filt50 <- PhosR::selectOverallPercent(phos_F_removeoutlier, 0.5) 
+
+nrow(phos_F_removeoutlier_filt100) # 3012
+nrow(phos_F_removeoutlier_filt70) # 10128
+nrow(phos_F_removeoutlier_filt50) # 14026
+
+usethis::use_data(phos_F_removeoutlier_filt100, overwrite = T)
+usethis::use_data(phos_F_removeoutlier_filt70, overwrite = T)
+usethis::use_data(phos_F_removeoutlier_filt50, overwrite = T)
+```
+
+# Missing value
+```{r}
+# Missing values
+dim(phos_F_removeoutlier_filt50) # 13954-113
+sum(is.na(phos_F_removeoutlier_filt50)) # 19600
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(phos_F_removeoutlier_filt50)) * 1
+
+annotation_col <- metadata_phos_F %>%
+  dplyr::select(new_sample_id, diet, strain, weeks) %>%
+  tibble::column_to_rownames(var = "new_sample_id")
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_female <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,             # Hide sample IDs
+  color = c("gray95", "black"),      # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),           # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Female, filtered"     # Add a title
+)
+
+ggsave(file.path("doc", "na_heatmap_female.png"),
+       plot = na_heatmap_female, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+
+
+valid_value_counts <- colSums(!is.na(phos_F_removeoutlier_filt50))
+count_data <- data.frame(column = names(valid_value_counts), count = valid_value_counts)
+
+mean_value <- mean(count_data$count)
+
+vv2_female <- ggplot(count_data, aes(x = seq_along(column), y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1) +
+  geom_text(aes(x = length(column) * 0.8, y = mean_value,
+                label = paste0("Mean = ", round(mean_value, 0))),
+            vjust = -0.5, color = "red", size = 4) +
+  labs(title = "Phospho, female (n=113), filtered",
+       x = "Samples (s1-s116)",
+       y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+ggsave(file.path("doc", "vv2_female.png"),
+       plot = vv2_female, width = 7, height = 4, dpi = 300, bg = "white")
+
+```
+
+
+# PCA before norm
+```{r}
+n_original <- nrow(phos_F_removeoutlier_filt50) # 7642
+df_nona <- na.omit(phos_F_removeoutlier_filt50) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F_filtered$new_sample_id)
+
+
+ 
+pca_day <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, outlier s171 (n=113)",
+    ellipse = FALSE
+)
+
+
+plotly::ggplotly(pca_day)
+
+ggsave(file.path("doc", "pca_day_beforenorm.png"), plot = pca_day, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+
+# Distribution
+```{r}
+boxplot(phos_F_removeoutlier_filt50)
+
+df_long <- tidyr::pivot_longer(phos_F_removeoutlier_filt50, 
+                               cols = everything(), 
+                               names_to = "new_sample_id", 
+                               values_to = "intensity")
+
+density_plot <- ggplot(df_long, aes(x = intensity, color = new_sample_id)) +
+  geom_density() +
+  labs(title = "Before norm (Phos_F, n=112)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none"
+  )
+
+density_plot
+
+
+ggsave(file.path("doc", "density_plot_phos_F.png"), plot = density_plot, width = 5, height = 3, dpi = 300, bg = "white")
+
+################# boxplot ######################################################
+# base R boxplot
+png(file.path("doc", "boxplot_phos_F.png"), width = 13, height = 6, units = "in", res = 300, bg = "white")
+boxplot(phos_F_removeoutlier_filt50,
+        las = 2,                # rotate x-axis labels
+        outline = FALSE,        # hide extreme outliers for clarity
+        col = "lightblue",
+        main = "Before norm (Phos_F, n=112)",
+        ylab = "Log2 intensity")
+dev.off()
+```
+
+# Normalization
+```{r}
+phos_F_removeoutlier_filt50_median <- medianScaling(phos_F_removeoutlier_filt50[1:ncol(phos_F_removeoutlier_filt50)], scale = TRUE)
+phos_F_removeoutlier_filt50_median <- as.data.frame(phos_F_removeoutlier_filt50_median)
+
+usethis::use_data(phos_F_removeoutlier_filt50_median, overwrite = T)
+```
+
+# Distrubution after norm
+```{r}
+boxplot(phos_F_removeoutlier_filt50_median)
+
+df_long <- tidyr::pivot_longer(phos_F_removeoutlier_filt50_median, 
+                               cols = everything(), 
+                               names_to = "new_sample_id", 
+                               values_to = "intensity")
+
+density_plot <- ggplot(df_long, aes(x = intensity, color = new_sample_id)) +
+  geom_density() +
+  labs(title = "After median norm (Phos_F, n=112)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none"
+  )
+
+density_plot
+
+
+ggsave(file.path("doc", "density_plot_phos_F_median.png"), plot = density_plot, width = 5, height = 3, dpi = 300, bg = "white")
+
+################# boxplot ######################################################
+# base R boxplot
+png(file.path("doc", "boxplot_phos_F_median.png"), width = 13, height = 6, units = "in", res = 300, bg = "white")
+boxplot(phos_F_removeoutlier_filt50_median,
+        las = 2,                # rotate x-axis labels
+        outline = FALSE,        # hide extreme outliers for clarity
+        col = "orange",
+        main = "After median norm (Phos_F, n=112)",
+        ylab = "Log2 intensity")
+dev.off()
+```
+
+# PCA after normalization
+```{r}
+n_original <- nrow(phos_F_removeoutlier_filt50_median) # 7642
+df_nona <- na.omit(phos_F_removeoutlier_filt50_median) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F_filtered$new_sample_id)
+
+
+ 
+pca_day <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, median norm (n=112)",
+    ellipse = FALSE
+)
+
+
+pca_beatbox <- plot_pca(
+    data = pca_data,
+    color_var = "beatbox_batch",
+    shape_var = "prep_day_batch",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, median norm (n=112)",
+    ellipse = FALSE
+)
+
+
+
+pca_diet <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "weeks",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),,
+    plot_title = "Phospho, F, median norm (n=112)",
+    ellipse = TRUE
+)
+
+
+pca_strain <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),,
+    plot_title = "Phospho, F, median norm (n=112)",
+    ellipse = TRUE
+)
+
+pca_weeks <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "diet",
+    palette_name = "Dark2",
+    plot_title = "Phospho, F, median norm (n=112)",
+    ellipse = TRUE
+)
+
+ggsave(file.path("doc", "pca_day_afternorm.png"), plot = pca_day, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_afternorm.png"), plot = pca_beatbox, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_afternorm.png"), plot = pca_diet, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_afternorm.png"), plot = pca_strain, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_afternorm.png"), plot = pca_weeks, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Batchcorr
+```{r}
+setequal(colnames(phos_F_removeoutlier_filt50_median), metadata_phos_F_filtered$new_sample_id) # TRUE
+all(colnames(phos_F_removeoutlier_filt50_median) == metadata_phos_F_filtered$new_sample_id)    # TRUE
+
+phos_F_removeoutlier_filt50_median_batchcorr <- limma::removeBatchEffect(
+  phos_F_removeoutlier_filt50_median,
+  batch = metadata_phos_F_filtered$beatbox_batch
+)
+phos_F_removeoutlier_filt50_median_batchcorr <- as.data.frame(phos_F_removeoutlier_filt50_median_batchcorr)
+usethis::use_data(phos_F_removeoutlier_filt50_median_batchcorr, overwrite = TRUE)
+```
+
+# PCA after batchcorr
+```{r}
+n_original <- nrow(phos_F_removeoutlier_filt50_median_batchcorr) # 7642
+df_nona <- na.omit(phos_F_removeoutlier_filt50_median_batchcorr) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F_filtered$new_sample_id)
+
+
+ 
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "weeks",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, batchcorr (n=112)",
+    ellipse = FALSE
+)
+
+
+pca_beatbox_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "beatbox_batch",
+    shape_var = "prep_day_batch",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, batchcorr (n=112)",
+    ellipse = FALSE
+)
+
+
+
+
+
+pca_diet_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "weeks",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),,
+    plot_title = "Phospho, F, batchcorr (n=112)",
+    ellipse = TRUE
+)
+
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),,
+    plot_title = "Phospho, F, batchcorr (n=112)",
+    ellipse = TRUE
+)
+
+pca_weeks_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "diet",
+    palette_name = "Dark2",
+    plot_title = "Phospho, F, batchcorr (n=112)",
+    ellipse = TRUE
+)
+
+ggsave(file.path("doc", "pca_day_batchcorr.png"), plot = pca_day_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_batchcorr.png"), plot = pca_beatbox_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_batchcorr.png"), plot = pca_diet_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_batchcorr.png"), plot = pca_strain_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_batchcorr.png"), plot = pca_weeks_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+# Subrgoup data into weeks
+```{r}
+metadata_phos_F12 <- metadata_phos_F_filtered %>% dplyr::filter(weeks == "12")
+metadata_phos_F24 <- metadata_phos_F_filtered %>% dplyr::filter(weeks == "24")
+metadata_phos_F36 <- metadata_phos_F_filtered %>% dplyr::filter(weeks == "36")
+metadata_phos_F48 <- metadata_phos_F_filtered %>% dplyr::filter(weeks == "48")
+
+phos_F12_batchcorr <- phos_F_removeoutlier_filt50_median_batchcorr[, metadata_phos_F12$new_sample_id] # 14026
+phos_F24_batchcorr <- phos_F_removeoutlier_filt50_median_batchcorr[, metadata_phos_F24$new_sample_id]
+phos_F36_batchcorr <- phos_F_removeoutlier_filt50_median_batchcorr[, metadata_phos_F36$new_sample_id]
+phos_F48_batchcorr <- phos_F_removeoutlier_filt50_median_batchcorr[, metadata_phos_F48$new_sample_id]
+
+
+dim(phos_F12_batchcorr) # 34 samples
+dim(phos_F24_batchcorr) # 24
+dim(phos_F36_batchcorr) # 25
+dim(phos_F48_batchcorr) # 29
+
+
+all(colnames(phos_F12_batchcorr) == metadata_phos_F12$new_sample_id)  # Should be TRUE
+all(colnames(phos_F24_batchcorr) == metadata_phos_F24$new_sample_id)
+all(colnames(phos_F36_batchcorr) == metadata_phos_F36$new_sample_id)
+all(colnames(phos_F48_batchcorr) == metadata_phos_F48$new_sample_id)
+```
+
+# week12
+```{r}
+n_original <- nrow(phos_F12_batchcorr) # 14026
+df_nona <- na.omit(phos_F12_batchcorr) # 4173
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data12 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F12, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F12$new_sample_id)
+
+
+pca_day_batchorr12 <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Phospho, F12 (n=34)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_batchorr12)
+plotly::ggplotly(pca_day_batchorr12)
+
+ggsave(file.path("doc", "pca_day_batchorr12.png"), plot = pca_day_batchorr12, width = 8, height = 6, dpi = 300, bg = "white")
+
+# beatbox batch
+pca_beatbox_batchcorr12 <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "Phospho, F12 (n=34)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_batchcorr12)
+plotly::ggplotly(pca_beatbox_batchcorr12)
+
+ggsave(file.path("doc", "pca_beatbox_batchcorr12.png"),plot = pca_beatbox_batchcorr12, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+pca_diet_batchcorr12 <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),,
+    plot_title = "Phospho, F12 (n=34)",
+    ellipse = TRUE
+)
+
+
+pca_strain_batchcorr12 <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),,
+    plot_title = "Phospho, F12 (n=34)",
+    ellipse = TRUE
+)
+
+
+ggsave(file.path("doc", "pca_day_batchcorr12.png"), plot = pca_day_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_batchcorr12.png"), plot = pca_beatbox_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_batchcorr12.png"), plot = pca_diet_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_batchcorr12.png"), plot = pca_strain_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+```
+

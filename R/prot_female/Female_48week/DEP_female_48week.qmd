@@ -1,0 +1,510 @@
+---
+title: "Female_week48"
+format: html
+---
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_F.rda"))
+load(here::here("data/female_filt50_median_batchcorr.rda"))
+```
+
+# Subgroup 48week
+```{r}
+metadata_F48 <- metadata_F %>% filter(weeks == "48")
+df_F48 <- female_filt50_median_batchcorr[, metadata_F48$new_sample_id] # 7642
+dim(df_F48) # 7642 proteins - 29 samples
+
+all(colnames(df_F48) == metadata_F48$new_sample_id)  # Should be TRUE
+
+```
+# PCA
+```{r}
+# Dimensions
+dim(df_F48)                       # e.g., 7642 proteins × ? samples
+df_nona <- na.omit(df_F48)
+
+n_original <- nrow(df_F48)        # e.g., 7642
+n_nona     <- nrow(df_nona)       # e.g., 6586
+
+# PCA on transposed matrix (samples as rows)
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+
+# Quick checks (optional)
+factoextra::fviz_pca_ind(pca_nona)
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Variance explained
+pca_var       <- pca_nona$sdev^2
+pca_var_perc  <- round(pca_var / sum(pca_var) * 100, 1)
+factoextra::fviz_eig(pca_nona, addlabels = TRUE)
+
+# Build a tidy scores table with sample IDs
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")
+
+pca_data48 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>%
+  dplyr::inner_join(metadata_F48, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Sanity checks: all samples should match
+all(pca_results$new_sample_id %in% metadata_F48$new_sample_id)
+setdiff(pca_results$new_sample_id, metadata_F48$new_sample_id)
+
+###############################################################################
+# By diet
+pca_F48_diet <- ggplot(
+  pca_data48, aes(x = PC1, y = PC2, color = diet, shape = strain, text = hover_text)
+) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("LFD" = "#21908CFF", "FFMD" = "#D55E00")) +
+  labs(
+    title = paste0("PCA – Female, 48 weeks (n=", ncol(df_F48), ")"),
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F48_diet)
+plotly::ggplotly(pca_F48_diet)
+
+ggsave(file.path("doc", "pca_F48_diet.png"),
+       plot = pca_F48_diet, width = 6, height = 5, dpi = 300, bg = "white")
+
+#####################
+# By strain
+pca_F48_strain <- ggplot(
+  pca_data48, aes(x = PC1, y = PC2, color = strain, shape = diet, text = hover_text)
+) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44")) +
+  labs(
+    title = paste0("PCA – Female, 48 weeks (n=", ncol(df_F48), ")"),
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F48_strain)
+plotly::ggplotly(pca_F48_strain)
+
+ggsave(file.path("doc", "pca_F48_strain.png"),
+       plot = pca_F48_strain, width = 6, height = 5, dpi = 300, bg = "white")
+
+```
+
+# Limma prep
+```{r}
+table(metadata_F48$diet) # FFMD-14, LFD-15
+table(metadata_F48$strain) # J-14, Ntac-15
+
+metadata_F48$diet <- factor(metadata_F48$diet, levels = c("LFD", "FFMD"))
+metadata_F48$strain <- factor(metadata_F48$strain, levels = c("J", "Ntac"))
+
+levels(metadata_F48$diet)
+levels(metadata_F48$strain)
+
+```
+# Limma
+```{r}
+# main effect
+design_matrix <- model.matrix(~ diet + strain, data = metadata_F48)
+colnames(design_matrix)
+fit <- lmFit(df_F48, design_matrix)
+fit2 <- eBayes(fit)
+
+################ diet
+F48_topTable_diet_maineffect <- limma::topTable(fit2, coef = "dietFFMD", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein") 
+
+sig_F48_topTable_diet_maineffect <- F48_topTable_diet_maineffect %>% 
+    filter(adj.P.Val < 0.05) # 2348 hits
+
+sig_filt_F48_topTable_diet_maineffect <- na.omit(sig_F48_topTable_diet_maineffect)
+cat("Sig. proteins with diet main effect: ", nrow(sig_filt_F48_topTable_diet_maineffect), "\n")
+
+################ strain 
+F48_topTable_strain_maineffect <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein")
+
+sig_F48_topTable_strain_maineffect <- F48_topTable_strain_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+sig_filt_F48_topTable_strain_maineffect <- na.omit(sig_F48_topTable_strain_maineffect)
+# 143
+
+cat("Sig. proteins with strain main effect: ", nrow(sig_filt_F48_topTable_strain_maineffect), "\n")
+
+```
+# Histogram
+```{r}
+png(file.path("doc", "F48_diet_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F48_topTable_diet_maineffect$P.Value, main = "F48: Diet main effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+png(file.path("doc", "F48_strain_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F48_topTable_strain_maineffect$P.Value, main = "F48: Strain main effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+```
+# Diet main effect
+## ORA
+```{r}
+total_hits <- sig_filt_F48_topTable_diet_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+
+up_hits <- sig_filt_F48_topTable_diet_maineffect %>%
+  filter(logFC > 0)
+
+down_hits <- sig_filt_F48_topTable_diet_maineffect %>%
+  filter(logFC < 0)
+
+
+sig_total_proteins <- total_hits$Protein
+sig_up_proteins <- up_hits$Protein
+sig_down_proteins <- down_hits$Protein
+background_proteins <- rownames(df_F48)
+
+#######
+
+ora_bp_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+ora_mf_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_cc_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+oraBP_diet_up <- dotplot(ora_bp_main_diet_up, showCategory = 10, title = "GOBP F48- main diet effect, up")
+oraMF_diet_up <- dotplot(ora_mf_main_diet_up, showCategory = 10, title = "GOMF F48- main diet effect, up")
+orCC_diet_up <- dotplot(ora_cc_main_diet_up, showCategory = 10, title = "GOBP F48- main diet effect, up")
+
+print(ora_bp_main_diet_up)
+print(ora_mf_main_diet_up)
+print(ora_cc_main_diet_up)
+
+ggsave(file.path("doc", "F48_oraBP_maineffect_diet_up.png"), plot = oraBP_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F48_oraMF_maineffect_diet_up.png"), plot = oraMF_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F48_oraCC_maineffect_diet_up.png"), plot = orCC_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+
+
+##################### downregulated proteins
+ora_bp_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_mf_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_cc_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+oraBP_diet_down <- dotplot(ora_bp_main_diet_down, showCategory = 10, title = "GOBP F48 - main diet effect, down")
+oraMF_diet_down <- dotplot(ora_mf_main_diet_down, showCategory = 10, title = "GOMF F48 - main diet effect, down")
+oraCC_diet_down <- dotplot(ora_cc_main_diet_down, showCategory = 10, title = "GOCC F48 - main diet effect, down")
+
+print(ora_bp_main_diet_down)
+print(ora_mf_main_diet_down)
+print(ora_cc_main_diet_down)
+
+ggsave(file.path("doc", "F48_oraBP_maineffect_diet_down.png"), plot = oraBP_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F48_oraMF_maineffect_diet_down.png"), plot = oraMF_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F48_oraCC_maineffect_diet_down.png"), plot = oraCC_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+
+```
+
+## Volcano plot
+```{r}
+F48_volcano_diet_maineffect <- create_volcano_plot(F48_topTable_diet_maineffect, top_n = 20, title = "Female-48week: FFMD vs LFD")
+print(F48_volcano_diet_maineffect)
+
+
+# with custom labels
+my_proteins <- c("Fasn", "Acly", "Sdc1", "Acox1", "Cyp2e1", "Cd36", "Col1a1", "Col3a1", "Alpl", "Lpl", "Ppara", "Cpt1a", "Mttp")  # put your proteins here
+setdiff(my_proteins, F48_topTable_diet_maineffect$Protein)
+
+F48_volcano_diet_maineffect <- create_volcano_plot(
+  F48_topTable_diet_maineffect,
+  label_proteins = my_proteins,
+  title = "Female-48week: FFMD vs LFD"
+)
+
+print(F48_volcano_diet_maineffect)
+plotly::ggplotly(F48_volcano_diet_maineffect)
+
+ggsave(file.path("doc", "F48_volcano_diet_maineffect.png"), plot = F48_volcano_diet_maineffect, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+
+## This is wrong?
+```{r}
+proteins_to_plot <- c(
+# upregulated
+"Plin4", "Apoa4", "Gpat3", "Acox1", "Cd36", "Cpt1a",
+# downreg
+"Fabp5", "Ppp1r3g", "Got1", "Acly", "Col1a1", "Col3a1"
+)
+
+
+# Generate plots in a named list
+plots <- lapply(proteins_to_plot, function(prot) {
+  profile_boxplot2(
+    protein_id        = prot,
+    quant_data        = df_F48,
+    metadata_df       = metadata_F48,
+    stats_table       = F48_topTable_strain_maineffect,
+    stats_protein_col = "Protein",  # NULL means use rownames
+    stats_pval_col    = "adj.P.Val",
+    new_id_col        = "new_sample_id",
+    group_col         = "diet",
+    custom_colors     = c("FFMD" = "#E69F00", "LFD" = "#0072B2")
+  )
+})
+
+# Give names to list elements
+names(plots) <- paste0("p_", proteins_to_plot)
+
+# Save all plots
+for (nm in names(plots)) {
+  ggsave(
+    filename = file.path("doc", paste0(nm, ".png")),
+    plot     = plots[[nm]],
+    width    = 3,
+    height   = 4,
+    dpi      = 300,
+    bg       = "white"
+  )
+}
+```
+
+```{r}
+p_acox1 <- profile_boxplot2("Acox1",
+                df_F48,
+                metadata_F48,
+                stats_table = F48_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+```
+
+# Strain main effect
+```{r}
+F48_volcano_strain_maineffect <- create_volcano_plot(F48_topTable_strain_maineffect, top_n = 20, title = "Female-48week: Ntac vs J")
+print(F48_volcano_strain_maineffect)
+
+ggsave(file.path("doc", "F48_volcano_strain_maineffect.png"), plot = F48_volcano_strain_maineffect, width = 7, height = 5, dpi = 300, bg = "white")
+
+total_hits <- sig_filt_F48_topTable_strain_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+
+up_hits <- sig_filt_F48_topTable_strain_maineffect %>%
+  filter(logFC > 0)
+
+down_hits <- sig_filt_F48_topTable_strain_maineffect %>%
+  filter(logFC < 0)
+
+sig_total_proteins <- total_hits$Protein  # 143
+sig_up_proteins    <- up_hits$Protein     # 45
+sig_down_proteins  <- down_hits$Protein   # 98
+
+```
+
+
+# Interaction
+```{r}
+# Interaction tells you how much extra (or less) the FFMD effect is in Ntac compared with J at week 48.
+metadata_F48$diet   <- factor(metadata_F48$diet,   levels = c("LFD", "FFMD"))
+metadata_F48$strain <- factor(metadata_F48$strain, levels = c("J", "Ntac"))
+
+design_matrix <- model.matrix(~ diet * strain, data = metadata_F48)
+colnames(design_matrix)
+
+fit  <- lmFit(df_F48, design_matrix)
+fit2 <- eBayes(fit)
+
+F48_topTable_interaction <- limma::topTable(fit2, coef = "dietFFMD:strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>%
+  tibble::rownames_to_column("Protein") 
+
+sig_F48_topTable_interaction <- F48_topTable_interaction %>% 
+    filter(adj.P.Val < 0.1) # number of significant hits
+# Example: 0
+
+top_prot <- "Gck" # replace with your protein of interest
+ggplot(metadata_F48,
+       aes(x = diet,
+           y = as.numeric(df_F48[top_prot, ]),
+           color = strain)) +
+  geom_point(position = position_jitter(width = 0.1)) +
+  geom_line(aes(group = strain))
+
+```
+
+
+# ffmd only
+```{r}
+metadata_F48_ffmd <- metadata_F48 %>%
+  filter(diet == "FFMD")
+df_F48_ffmd<- df_F48[, metadata_F48_ffmd$new_sample_id]
+dim(df_F48_ffmd) # 14 samples
+
+table(metadata_F48_ffmd$strain) # J-6, Ntac-8
+
+metadata_F48_ffmd$strain <- factor(metadata_F48_ffmd$strain, levels = c("J", "Ntac"))
+
+
+levels(metadata_F48_ffmd$strain)
+
+design_matrix <- model.matrix(~ strain, data = metadata_F48_ffmd)
+colnames(design_matrix)
+
+fit <- lmFit(df_F48_ffmd, design_matrix)
+fit2 <- eBayes(fit)
+
+################ strain 
+ffmd_F48_topTable_strain <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein")
+
+sig_ffmd__F48_topTable_strain <- ffmd_F48_topTable_strain %>% 
+    filter(adj.P.Val < 0.05)
+sig_ffmd__F48_topTable_strain <- na.omit(sig_ffmd__F48_topTable_strain)
+# 143
+
+cat("Sig. proteins with strain main effect: ", nrow(sig_ffmd__F48_topTable_strain), "\n")
+
+png(file.path("doc", "ffmd_F48_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(sig_ffmd__F48_topTable_strain$P.Value, main = "F48 ffmd: Strain effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+
+
+ffmd_F48_volcano_strain <- create_volcano_plot(ffmd_F48_topTable_strain, top_n = 20, title = "Female-48week-ffmd: strain effect")
+print(ffmd_F48_volcano_strain)
+
+ggsave(file.path("doc", "ffmd_F48_volcano_strain.png"), plot = ffmd_F48_volcano_strain, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+```{r}
+metadata_F48_lfd <- metadata_F48 %>%
+  filter(diet == "LFD")
+df_F48_lfd <- df_F48[, metadata_F48_lfd$new_sample_id]
+dim(df_F48_lfd) # depends on LFD sample count
+
+table(metadata_F48_lfd$strain) # Example: J-8, Ntac-7
+
+metadata_F48_lfd$strain <- factor(metadata_F48_lfd$strain, levels = c("J", "Ntac"))
+
+levels(metadata_F48_lfd$strain)
+
+design_matrix <- model.matrix(~ strain, data = metadata_F48_lfd)
+colnames(design_matrix)
+
+fit <- lmFit(df_F48_lfd, design_matrix)
+fit2 <- eBayes(fit)
+
+################ strain 
+lfd_F48_topTable_strain <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein")
+
+sig_lfd_F48_topTable_strain <- lfd_F48_topTable_strain %>% 
+    filter(adj.P.Val < 0.05)
+sig_lfd_F48_topTable_strain <- na.omit(sig_lfd_F48_topTable_strain)
+# update number of hits
+cat("Sig. proteins with strain main effect: ", nrow(sig_lfd_F48_topTable_strain), "\n")
+
+png(file.path("doc", "lfd_F48_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(sig_lfd_F48_topTable_strain$P.Value, main = "F48 LFD: Strain effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+lfd_F48_volcano_strain <- create_volcano_plot(lfd_F48_topTable_strain, top_n = 20, title = "Female-48week-LFD: strain effect")
+print(lfd_F48_volcano_strain)
+
+ggsave(file.path("doc", "lfd_F48_volcano_strain.png"), plot = lfd_F48_volcano_strain, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+

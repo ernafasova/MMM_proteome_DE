@@ -1,0 +1,1324 @@
+---
+title: "male_week12_DEP"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_M.rda"))
+load(here::here("data/male_log2_filt_median.rda"))
+```
+
+# functions
+```{r}
+# For PCA
+plot_pca <- function(data, color_var, shape_var = NULL, color_vals, file_name, plot_title) {
+  # Build aesthetic mapping conditionally
+  mapping <- aes(
+    x = PC1,
+    y = PC2,
+    color = .data[[color_var]],
+    text = hover_text
+  )
+  if (!is.null(shape_var)) {
+    mapping <- aes(
+      x = PC1,
+      y = PC2,
+      color = .data[[color_var]],
+      shape = .data[[shape_var]],
+      text = hover_text
+    )
+  }
+  
+  p <- ggplot(data, mapping) +
+    geom_point(size = 3.5, alpha = 0.7) +
+    stat_ellipse(
+      aes(
+        group = .data[[color_var]],
+        fill = .data[[color_var]]
+      ),
+      geom = "path",
+      show.legend = FALSE
+    ) +
+    scale_color_manual(values = color_vals) +
+    labs(
+      title = plot_title,
+      subtitle = paste("based on", n_nona, "proteins out of", n_original),
+      x = paste0("PC1 (", pca_var_perc[1], "%)"),
+      y = paste0("PC2 (", pca_var_perc[2], "%)")
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+  
+  print(p)
+}
+
+################################ limma main results 
+# For limma
+get_limma_results <- function(fit_obj, coef_name, contrast_label, alpha = 0.05) {
+  
+  # Extract results table
+  top_table <- limma::topTable(
+    fit_obj,
+    coef          = coef_name,
+    adjust.method = "BH",
+    sort.by       = "logFC",
+    number        = Inf
+  ) %>%
+    rownames_to_column("Protein")
+  
+  # Filter significant hits
+  sig <- top_table %>%
+    filter(adj.P.Val < alpha) %>%
+    drop_na()
+  
+  up   <- sig %>% filter(logFC > 0)
+  down <- sig %>% filter(logFC < 0)
+  
+  # Console summary
+  message("\n---- ", contrast_label, " ----")
+  message("Total significant: ", nrow(sig))
+  message("UP: ", nrow(up), " | DOWN: ", nrow(down))
+  
+  # Return result lists
+  return(list(
+    top_table = top_table,
+    sig       = sig,
+    up        = up,
+    down      = down
+  ))
+}
+
+
+```
+
+
+# Subrgoup male week12
+```{r}
+metadata_M <- metadata_M %>% mutate(Group = paste(diet, strain, sep = "_"))
+metadata_M12 <- metadata_M %>% filter(weeks == "12")
+df_M12 <- male_log2_filt_median[, metadata_M12$new_sample_id] # 7642
+dim(df_M12) # 36 samples
+all(colnames(df_M12) == metadata_M12$new_sample_id)  # Should be TRUE
+
+
+metadata_M12_J <- metadata_M12 %>% filter(strain == "J")
+df_M12_J <- df_M12[, metadata_M12_J$new_sample_id]
+dim(df_M12_J) # 18 samples
+all(colnames(df_M12_J) == metadata_M12_J$new_sample_id)  # Should be TRUE
+
+
+metadata_M12_Ntac <- metadata_M12 %>% filter(strain == "Ntac")
+df_M12_Ntac <- df_M12[, metadata_M12_Ntac$new_sample_id]
+dim(df_M12_Ntac) # 18 samples
+all(colnames(df_M12_Ntac) == metadata_M12_Ntac$new_sample_id)  # Should be TRUE
+```
+# Correlation
+```{r}
+all(colnames(df_M12) == metadata_M12$new_sample_id) 
+
+mat <- as.matrix(df_M12)  
+cor_matrix <- cor(mat, method = "pearson", use = "pairwise.complete.obs")
+
+# 2) Annotations
+annotation_col <- data.frame(
+  Diet   = metadata_M12$diet,
+  Strain = metadata_M12$strain,
+  row.names = metadata_M12$new_sample_id
+)
+
+annotation_colors <- list(
+  Diet   = c(LFD = "#21908CFF", FFMD = "#D55E00"),
+  Strain = c(J = "#CCBB44", Ntac = "#AA3377") 
+)
+
+M12_heatmap_corr <- pheatmap(
+  cor_matrix,
+  color = colorRampPalette(c("lightpink", "white", "lightskyblue3"))(100),
+  main = "Pearson Correlation Heatmap Male 12week",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  scale = "none",
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  breaks = seq(0.7, 1, length.out = 100) # adjust min as needed
+)
+
+cor_values <- cor_matrix[upper.tri(cor_matrix)]
+min_corr <- min(cor_values)
+max_corr <- max(cor_values)
+median_corr <- median(cor_values)
+mean_corr <- mean(cor_values)
+cat("Minimum correlation:", round(min_corr, 3), "\n")
+cat("Maximum correlation:", round(max_corr, 3), "\n")
+cat("Median correlation:", round(median_corr, 3), "\n")
+cat("Mean correlation:", round(mean_corr, 3), "\n")
+
+ggsave(file.path("doc", "M12_heatmap_corr.png"), plot = M12_heatmap_corr, width = 10, height = 7, dpi = 300, bg = "white")
+```
+
+# PCA data: M_12
+```{r}
+n_original <- nrow(df_M12) # 7642
+df_nona <- na.omit(df_M12) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data12 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_M, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_M12$new_sample_id)
+
+pca_diet_M12 <- plot_pca(
+  data       = pca_data12,
+  color_var  = "diet",
+  shape_var  = "strain",
+  color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+  file_name  = "pca_M12_diet.png",
+  plot_title = "Male, 12 weeks (n=36)"
+)
+
+
+pca_strain_M12 <- plot_pca(
+  data       = pca_data12,
+  color_var  = "strain",
+  shape_var  = "diet",
+  color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+  plot_title = "Male, 12 weeks (n =36)",
+  file_name  = "pca_M12_strain.png"
+)
+```
+
+# Limma Main Effect (additive model)
+More power because all mice contribute to each main‐effect estimate.
+```{r}
+metadata_M12 <- metadata_M12 %>%
+    mutate(
+        diet   = factor(diet, levels = c("LFD", "FFMD")),
+        strain = factor(strain, levels = c("J", "Ntac"))
+        )
+levels(metadata_M12$diet)
+levels(metadata_M12$strain)
+
+table(metadata_M12$diet)   # FFMD-24, LFD-12
+table(metadata_M12$strain) # J-17, Ntac-18
+
+
+# create design matrix
+design_matrix <- model.matrix(~ diet + strain + beatbox_batch, data = metadata_M12)
+colnames(design_matrix)
+fit  <- lmFit(df_M12, design_matrix)
+fit2 <- eBayes(fit)
+
+# ---- Usage ----
+limma_results_M12_diet  <- get_limma_results(fit2, "dietFFMD",   "M12: Diet")
+limma_results_M12_strain <- get_limma_results(fit2, "strainNtac", "M12: Strain")
+
+
+# Diet histogram
+hist(limma_results_M12_diet$top_table$P.Value, main = "M12: Diet main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_M12_strain$top_table$P.Value, main = "M12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "M12_main_diet_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M12_diet$top_table$P.Value, main = "M12: Diet main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "M12_main_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M12_strain$top_table$P.Value, main = "M12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+```
+
+
+
+# Limma Interaction
+*dietFFMD:strainNtac* tests whether the effect of FFMD vs LFD depends on strain.
+```{r}
+design_interaction <- model.matrix(~ diet * strain + beatbox_batch, data = metadata_M12)
+colnames(design_interaction)
+
+fit_inter  <- lmFit(df_M12, design_interaction)
+fit2_inter <- eBayes(fit_inter)
+colnames(fit2_inter$coefficients)
+
+limma_results_M12_interaction <- get_limma_results(
+    fit2_inter, 
+    coef_name = "dietFFMD:strainNtac", 
+    contrast_label = "M12: Diet x Strain Interaction", 
+    alpha = 0.1)
+
+# p val histograms
+png(file.path("doc", "M12_interaction_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M12_interaction$top_table$P.Value, main = "M12: Interaction (diet x strain)", xlab = "P-value", col = "darkslategray4")
+dev.off()
+```
+
+
+
+
+
+
+
+
+
+
+ 
+# Limma Contrasts
+concistent with prelimiray results - the diet effect is more exaggerated in J mice than in Ntac in the short-term.
+```{r}
+table(metadata_M12$Group)
+metadata_M12$Group <- factor(metadata_M12$Group, levels = c("LFD_J", "LFD_Ntac", "FFMD_J", "FFMD_Ntac"))
+levels(metadata_M12$Group)
+
+
+
+design_group <- model.matrix(~ 0 + Group + beatbox_batch, data = metadata_M12)
+colnames(design_group)
+colnames(design_group)[1:4] <- colnames(design_group)[1:4] |>
+  sub("^Group", "", x = _)   
+
+
+contrast_matrix <- makeContrasts(
+  Diet_in_J       = FFMD_J     - LFD_J,
+  Diet_in_Ntac    = FFMD_Ntac  - LFD_Ntac,
+  Strain_in_LFD   = LFD_Ntac   - LFD_J,
+  Strain_in_FFMD  = FFMD_Ntac  - FFMD_J,
+  Interaction     = (FFMD_Ntac - LFD_Ntac) - (FFMD_J - LFD_J),
+  levels = design_group
+)
+
+fit <- lmFit(df_M12, design_group)
+fit2 <- contrasts.fit(fit, contrast_matrix)
+fit2 <- eBayes(fit2)
+
+get_limma_results_contrast <- function(fit_obj, coef_name, label, alpha = 0.05) {
+  top_table <- limma::topTable(
+    fit_obj,
+    coef          = coef_name,
+    adjust.method = "BH",
+    sort.by       = "logFC",
+    number        = Inf
+  ) %>%
+    tibble::rownames_to_column("Protein")
+  
+  sig  <- top_table %>% dplyr::filter(adj.P.Val < alpha) %>% tidyr::drop_na()
+  up   <- sig %>% dplyr::filter(logFC > 0)
+  down <- sig %>% dplyr::filter(logFC < 0)
+  
+  # Print summary
+  cat("\n----", label, "----\n")
+  cat("Total significant:", nrow(sig), "\n")
+  cat("Up:", nrow(up), " | Down:", nrow(down), "\n")
+  
+  # Save histogram if you want
+  png(
+    file.path("doc", paste0(label, "_hist.png")),
+    width  = 5,
+    height = 4,
+    units  = "in",
+    res    = 300,
+    bg     = "white"
+  )
+  hist(
+    top_table$P.Value,
+    main = paste(label, "P-value histogram"),
+    xlab = "P-value",
+    col  = "darkslategray4"
+  )
+  dev.off()
+  
+  # Return results as list
+  return(list(
+    top_table = top_table,
+    sig       = sig,
+    up        = up,
+    down      = down
+  ))
+}
+
+
+
+# 2. Apply to All Contrasts in a Loop
+
+# Get the contrast names you defined:
+contrast_names <- colnames(contrast_matrix)
+
+# Loop through all contrasts:
+results_list <- list()
+for (cname in contrast_names) {
+  results_list[[cname]] <- get_limma_results_contrast(
+    fit2,
+    coef_name = cname,
+    label     = cname,
+    alpha     = 0.05  # or your chosen FDR threshold
+  )
+}
+
+# results_list will store each contrast’s full results for later inspection.
+# Plots and printouts are created for each contrast automatically.
+limma_results_M12_contrasts <- results_list
+
+diet_effect_J_table <- limma_results_M12_contrasts$Diet_in_J$top_table
+```
+
+# Diet effect in strains
+
+## pca-J
+```{r}
+dim(df_M12_J) # 18 samples
+df_nona <- na.omit(df_M12_J) 
+
+n_original <- nrow(df_M12_J) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_M12_J, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_M12$new_sample_id)
+
+pca_diet_M12_J <- plot_pca(
+  data       = pca_data,
+  color_var  = "diet",
+  shape_var = NULL,
+  color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+  file_name  = "pca_M12_diet_J.png",
+  plot_title = "Male, 12 weeks, J (n=18)"
+)
+
+
+ggsave(file.path("doc", "pca_diet_M12_J.png"), plot = pca_diet_M12_J, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+## pca-Ntac
+```{r}
+dim(df_M12_Ntac) # 18 samples
+df_nona <- na.omit(df_M12_Ntac) 
+
+n_original <- nrow(df_M12_Ntac) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+factoextra::fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_M12_Ntac, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_M12_Ntac$new_sample_id)
+#setdiff(pca_results$new_sample_id, metadata_M12_Ntac$new_sample_id)
+
+###############################################################################
+pca_diet_M12_Ntac <- plot_pca(
+  data       = pca_data,
+  color_var  = "diet",
+  shape_var = NULL,
+  color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+  file_name  = "pca_M12_diet_Ntac.png",
+  plot_title = "Male, 12 weeks, Ntac (n=18)"
+)
+
+ggsave(file.path("doc", "pca_diet_M12_Ntac.png"), plot = pca_diet_M12_Ntac,
+       width = 6, height = 5, dpi = 300, bg = "white") 
+```
+
+## Euler for diet
+```{r}
+# euler for total
+diet_J_sig <- limma_results_M12_contrasts$Diet_in_J$sig$Protein
+# 1962
+diet_Ntac_sig <- limma_results_M12_contrasts$Diet_in_Ntac$sig$Protein
+# 543
+
+# Euler diagram
+fit_euler <- euler(list(J = diet_J_sig, Ntac = diet_Ntac_sig))
+
+euler_total <- plot(fit_euler, quantities = TRUE, labels = TRUE,
+     fills = c("#CCBB44", "#AA3377"), edges = TRUE,
+     main = "M12 Sig diet hits: total")
+
+print(euler_total)
+ggsave(file.path("doc", "euler_M12_Diet_effect_total.png"), plot = euler_total ,width = 4, height = 3, dpi = 300, bg = "white") 
+
+
+
+cat("Number unique to Ntac:", length(setdiff(diet_Ntac_sig, diet_J_sig)), "\n") # setdiff gives number of unique elements
+cat("Number unique to J:",    length(setdiff(diet_J_sig, diet_Ntac_sig)), "\n") 
+cat("Number overlap (both):", length(intersect(diet_Ntac_sig, diet_J_sig)), "\n") # intersect gives shared sets
+cat("Total significant (Ntac):", length(diet_Ntac_sig), "\n")
+cat("Total significant (J):",    length(diet_J_sig), "\n")
+
+
+
+#######################################################################
+# euler for upregulated proteins in J & Ntac
+diet_J_up <- limma_results_M12_contrasts$Diet_in_J$up$Protein
+# 1104
+diet_Ntac_up <-limma_results_M12_contrasts$Diet_in_Ntac$up$Protein
+# 428
+
+# Euler diagram
+fit_euler_up <- euler(list(J_up = diet_J_up, Ntac_up = diet_Ntac_up))
+
+eulerplot_up <- plot(fit_euler_up, quantities = TRUE, labels = TRUE,
+     fills = c("#fde0dd", "#fa9fb5"), edges = TRUE,
+     main = "Significant diet hits: UP")
+
+print(eulerplot_up)
+
+ggsave(file.path("doc", "euler_M12_Diet_effect_up.png"), plot = eulerplot_up ,width = 4, height = 3, dpi = 300, bg = "white") 
+
+cat("Number unique to Ntac-up:", length(setdiff(diet_Ntac_up, diet_J_up)), "\n") # setdiff gives number of unique elements
+cat("Number unique to J-up:",    length(setdiff(diet_J_up, diet_Ntac_up)), "\n") 
+cat("Number overlap (both)-up:", length(intersect(diet_Ntac_up, diet_J_up)), "\n") # intersect gives shared sets
+cat("Total significant (Ntac)-up:", length(diet_Ntac_up), "\n")
+cat("Total significant (J)-up:",    length(diet_J_up), "\n")
+
+#####################################################################
+# euler for down regulated proteins in J & Ntac
+diet_J_down <- limma_results_M12_contrasts$Diet_in_J$down$Protein
+diet_Ntac_down <- limma_results_M12_contrasts$Diet_in_Ntac$down$Protein
+
+fit_euler_down <- euler(list(J_down = diet_J_down, Ntac_down = diet_Ntac_down))
+
+eulerplot_down <- plot(fit_euler_down, quantities = TRUE, labels = TRUE,
+     fills = c("#ece7f2", "#2b8cbe"), edges = TRUE,
+     main = "Significant diet hits: DOWN")
+print(eulerplot_down)
+
+ggsave(file.path("doc", "euler_M12_Diet_effect_down.png"), plot = eulerplot_down ,width = 4, height = 3, dpi = 300, bg = "white") 
+
+cat("Number unique to Ntac-down:", length(setdiff(diet_Ntac_down, diet_J_down)), "\n") # setdiff gives number of unique elements
+cat("Number unique to J-down:",    length(setdiff(diet_J_down, diet_Ntac_down)), "\n") 
+cat("Number overlap (both)-down:", length(intersect(diet_Ntac_down, diet_J_down)), "\n") # intersect gives shared sets
+cat("Total significant (Ntac)-down:", length(diet_Ntac_down), "\n")
+cat("Total significant (J)-down:",    length(diet_J_down), "\n")
+
+```
+
+
+
+## ORA: common total diet proteins
+```{r}
+background_proteins <- rownames(df_M12)
+length(background_proteins) # 7612
+
+common_diet_proteins <- intersect(diet_J_sig, diet_Ntac_sig)
+length(common_diet_proteins)  # 389
+
+#mapped <- AnnotationDbi::select(org.Mm.eg.db,keys = common_diet_proteins,keytype = "SYMBOL",columns = "ENTREZID")
+#entrez_ids <- unique(na.omit(mapped$ENTREZID))
+
+
+ora_bp <- enrichGO(
+    gene          = common_diet_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+barplot(ora_bp, showCategory = 10, title = "GOBP-ORA: Common Diet-Regulated Proteins")
+ora_diet_M12_dotplot <- dotplot(ora_bp, showCategory = 10, title = "GOBP-ORA: Common diet Proteins")
+print(ora_diet_M12_dotplot)
+ggsave(file.path("doc", "ora_diet_M12_dotplot.png"), plot = ora_diet_M12_dotplot, width = 6, height = 5, dpi = 300, bg = "white") 
+
+# Save outputs if desired
+write.csv(as.data.frame(ora_bp),file = "doc/common_dietproteins_GOBP_enrichment_M12.csv",row.names = FALSE)
+```
+## ORA - up/down
+```{r}
+diet_J_up <- limma_results_M12_contrasts$Diet_in_J$up$Protein # 1104
+diet_Ntac_up <-limma_results_M12_contrasts$Diet_in_Ntac$up$Protein # 428
+
+diet_J_up_uniq <- setdiff(diet_J_up, diet_Ntac_up) # 789
+diet_Ntac_up_uniq <- setdiff(diet_Ntac_up, diet_J_up) # 113
+
+background_proteins <- rownames(df_M12) # 7612
+
+
+ora_bp_J_up_uniq <- enrichGO(
+    gene          = diet_J_up_uniq,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+ora_bp_Ntac_up_uniq <- enrichGO(
+    gene          = diet_Ntac_up_uniq,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+dotplot_ora_bp_J_up_uniq <- dotplot(ora_bp_J_up_uniq, showCategory = 10, title = "GOBP-ORA: uniq up J")
+
+dotplot_ora_bp_Ntac_up_uniq <- dotplot(ora_bp_Ntac_up_uniq, showCategory = 10, title = "GOBP-ORA: uniq up Ntac")
+
+print(dotplot_ora_bp_J_up_uniq)
+print(dotplot_ora_bp_Ntac_up_uniq)
+
+ggsave(file.path("doc", "dotplot_ora_bp_J_up_uniq.png"), plot = dotplot_ora_bp_J_up_uniq, width = 6, height = 6, dpi = 300, bg = "white") 
+ggsave(file.path("doc", "dotplot_ora_bp_Ntac_up_uniq.png"), plot = dotplot_ora_bp_Ntac_up_uniq, width = 6, height = 3, dpi = 300, bg = "white") 
+
+#write.csv(as.data.frame(ora_bp),file = "doc/common_dietproteins_GOBP_enrichment_M12.csv",row.names = FALSE)
+
+
+ora_mf_J_up_uniq <- enrichGO(
+    gene          = diet_J_up_uniq,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+
+
+dotplot_ora_mf_J_up_uniq <- dotplot(ora_mf_J_up_uniq, showCategory = 10, title = "GOMF-ORA: uniq up J")
+print(dotplot_ora_mf_J_up_uniq)
+
+ggsave(file.path("doc", "dotplot_ora_mf_J_up_uniq.png"), plot = dotplot_ora_mf_J_up_uniq, width = 6, height = 6, dpi = 300, bg = "white")
+
+
+
+ora_cc_J_up_uniq <- enrichGO(
+    gene          = diet_J_up_uniq,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+ora_cc_Ntac_up_uniq <- enrichGO(
+    gene          = diet_Ntac_up_uniq,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+dotplot_ora_cc_J_up_uniq <- dotplot(ora_cc_J_up_uniq, showCategory = 10, title = "GOCC-ORA: uniq up J")
+
+dotplot_ora_cc_Ntac_up_uniq <- dotplot(ora_cc_Ntac_up_uniq, showCategory = 10, title = "GOCC-ORA: uniq up Ntac")
+
+print(dotplot_ora_cc_J_up_uniq)
+print(dotplot_ora_cc_Ntac_up_uniq)
+
+ggsave(file.path("doc", "dotplot_ora_cc_J_up_uniq.png"),
+       plot = dotplot_ora_cc_J_up_uniq, width = 6, height = 6, dpi = 300, bg = "white")
+
+```
+
+
+## Scatter plot FC
+
+```{r}
+fc_J_vec <- limma_results_M12_contrasts$Diet_in_J$top_table$logFC
+names(fc_J_vec) <- limma_results_M12_contrasts$Diet_in_J$top_table$Protein
+fc_Ntac_vec <- limma_results_M12_contrasts$Diet_in_Ntac$top_table$logFC
+names(fc_Ntac_vec) <- limma_results_M12_contrasts$Diet_in_Ntac$top_table$Protein
+common_proteins <- intersect(names(fc_J_vec), names(fc_Ntac_vec))
+
+# --- Extract significant sets ---
+sig_J    <- limma_results_M12_contrasts$Diet_in_J$sig$Protein
+sig_Ntac <- limma_results_M12_contrasts$Diet_in_Ntac$sig$Protein
+
+# --- Combine into a single dataframe for plotting ---
+plot_df <- data.frame(
+  Protein     = common_proteins,
+  logFC_J     = fc_J_vec[common_proteins],
+  logFC_Ntac  = fc_Ntac_vec[common_proteins],
+  stringsAsFactors = FALSE
+)
+
+# --- Category assignment ---
+plot_df$sig_cat <- "Not sig"
+plot_df$sig_cat[plot_df$Protein %in% sig_J    & !(plot_df$Protein %in% sig_Ntac)] <- "Sig in J only"
+plot_df$sig_cat[plot_df$Protein %in% sig_Ntac & !(plot_df$Protein %in% sig_J)]    <- "Sig in Ntac only"
+plot_df$sig_cat[plot_df$Protein %in% sig_J    &  plot_df$Protein %in% sig_Ntac]   <- "Sig in both"
+
+# (Optional) enforce a consistent legend/order
+plot_df$sig_cat <- factor(
+  plot_df$sig_cat,
+  levels = c("Sig in both", "Sig in J only", "Sig in Ntac only", "Not sig")
+)
+
+# --- Color scheme for plotting ---
+plot_colors <- c(
+  "Sig in both"     = "red",
+  "Sig in J only"   = "orange",
+  "Sig in Ntac only"= "royalblue2",
+  "Not sig"         = "grey70"
+)
+
+proteins_to_label <- c("Gpt", "Gpt2", "Acox1", "Cpt1a", "Fabp1")
+proteins_to_label <- limma_results_M12_contrasts$Interaction$sig$Protein
+
+cor_coeff <- cor(plot_df$logFC_J, plot_df$logFC_Ntac, method = "pearson", use = "pairwise.complete.obs")
+cor_label <- paste("Pearson r =", round(cor_coeff, 2))
+
+
+scatter_plot_diet <- ggplot(plot_df, aes(x = logFC_J, y = logFC_Ntac, color = sig_cat)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  scale_color_manual(values = plot_colors) +
+  labs(
+    x = "logFC (Diet effect, J)",
+    y = "logFC (Diet effect, Ntac)",
+    color = "Significance Category",
+    title = "Scatter Plot: Diet logFC in J vs Ntac"
+  ) +
+  annotate(
+    "text",
+    x = min(plot_df$logFC_J, na.rm = TRUE),        # or pick a custom x
+    y = max(plot_df$logFC_Ntac, na.rm = TRUE),     # or pick a custom y
+    label = cor_label,
+    hjust = 0, vjust = 1, size = 5, fontface = "bold", color = "black"
+  ) +
+    geom_text_repel( data = subset(plot_df, Protein %in% proteins_to_label), 
+                     aes(label = Protein), 
+                     size = 4, box.padding = 5, 
+                     segment.color = "black", stroke = 2, max.overlaps = Inf) +
+  theme_classic()
+
+print(scatter_plot_diet)
+
+ggsave(file.path("doc", "scatter_plot_diet2.png"), plot = scatter_plot_diet, width = 7, height = 5, dpi = 300, bg = "white") 
+```
+
+
+
+
+# Strain difference in baseline & FFMD
+```{r}
+metadata_M12_lfd <- metadata_M12 %>% filter(diet  == "LFD") 
+df_M12_lfd <- df_M12[, metadata_M12_lfd$new_sample_id]
+dim(df_M12_lfd) # 12 samples
+all(colnames(df_M12_lfd) == metadata_M12_lfd$new_sample_id)  # Should be TRUE
+
+
+metadata_M12_ffmd <- metadata_M12 %>% filter(diet == "FFMD")
+df_M12_ffmd <- df_M12[, metadata_M12_ffmd$new_sample_id]
+dim(df_M12_ffmd) # 24 samples
+all(colnames(df_M12_ffmd) == metadata_M12_ffmd$new_sample_id)  # Should be TRUE
+```
+
+
+## pca-LFD
+```{r}
+dim(df_M12_lfd) # 12 samples
+df_nona <- na.omit(df_M12_lfd) 
+
+n_original <- nrow(df_M12_lfd) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_M12_lfd, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_M12_lfd$new_sample_id)
+
+pca_diet_M12_lfd <- plot_pca(
+  data       = pca_data,
+  color_var  = "strain",
+  shape_var = NULL,
+  color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+  file_name  = "pca_M12_strain_lfd.png",
+  plot_title = "Male, 12 weeks, lfd (n=12)"
+)
+
+plotly::ggplotly(pca_diet_M12_lfd)
+
+ggsave(file.path("doc", "pca_diet_M12_lfd.png"), plot = pca_diet_M12_lfd, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+
+## pca-FFMD
+```{r}
+dim(df_M12_ffmd) # 12 samples
+df_nona <- na.omit(df_M12_ffmd) 
+
+n_original <- nrow(df_M12_ffmd) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M12_ffmd, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_M12_ffmd$new_sample_id)
+
+pca_diet_M12_ffmd <- plot_pca(
+  data       = pca_data,
+  color_var  = "strain",
+  shape_var  = NULL,
+  color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+  file_name  = "pca_M12_strain_ffmd.png",
+  plot_title = "Male, 12 weeks, ffmd (n=12)"
+)
+
+print(pca_diet_M12_ffmd)
+
+ggsave(
+  file.path("doc", "pca_diet_M12_ffmd.png"),
+  plot   = pca_diet_M12_ffmd,
+  width  = 6,
+  height = 5,
+  dpi    = 300,
+  bg     = "white"
+)
+
+```
+
+## Euler
+```{r}
+strain_lfd_sig  <- limma_results_M12_contrasts$Strain_in_LFD$sig$Protein # 35
+strain_ffmd_sig <- limma_results_M12_contrasts$Strain_in_FFMD$sig$Protein # 463
+
+common_strain_proteins <- intersect(strain_lfd_sig, strain_ffmd_sig) # 16
+print(common_strain_proteins)
+print(setdiff(strain_lfd_sig,  strain_ffmd_sig))
+
+# Euler diagram
+fit_euler_strain <- euler(list(lfd = strain_lfd_sig, ffmd = strain_ffmd_sig))
+
+p <- plot(
+  fit_euler_strain,
+  quantities = TRUE,
+  labels     = TRUE,
+  fills      = c("#21908CFF", "#D55E00"),
+  edges      = TRUE,
+  main       = "Significant strain hits"
+)
+
+print(p)
+ggsave(file.path("doc", "euler_M12_Strain_effect_total.png"),plot = p, width = 4, height = 3, dpi = 300, bg = "white")
+
+
+print(setdiff(strain_lfd_sig,  strain_ffmd_sig))
+
+cat("Number unique to ffmd:", length(setdiff(strain_ffmd_sig, strain_lfd_sig)), "\n")
+cat("Number unique to lfd:",  length(setdiff(strain_lfd_sig,  strain_ffmd_sig)), "\n")
+cat("Number overlap (both):", length(intersect(strain_ffmd_sig, strain_lfd_sig)), "\n")
+cat("Total significant (ffmd):", length(strain_ffmd_sig), "\n")
+cat("Total significant (lfd):",  length(strain_lfd_sig),  "\n")
+
+
+
+######################################################################
+# up
+strain_lfd_up  <- limma_results_M12_contrasts$Strain_in_LFD$up$Protein # 11
+strain_ffmd_up <- limma_results_M12_contrasts$Strain_in_FFMD$up$Protein # 196
+
+
+# Euler diagram
+fit_euler_strain_up <- euler(list(lfd = strain_lfd_up, ffmd = strain_ffmd_up))
+
+p_up <- plot(
+  fit_euler_strain_up,
+  quantities = TRUE,
+  labels     = TRUE,
+  fills      = c("#fde0dd", "#fa9fb5"),
+  edges      = TRUE,
+  main       = "Significant strain hits-UP"
+)
+
+print(p_up)
+ggsave(file.path("doc", "euler_M12_Strain_effect_UP.png"),plot = p_up, width = 4, height = 3, dpi = 300, bg = "white")
+
+
+cat("Number unique to ffmd -UP:", length(setdiff(strain_ffmd_up, strain_lfd_up)), "\n")
+cat("Number unique to lfd-UP:",  length(setdiff(strain_lfd_up,  strain_ffmd_up)), "\n")
+cat("Number overlap (both)-UP:", length(intersect(strain_ffmd_up, strain_lfd_up)), "\n")
+cat("Total significant (ffmd)-UP:", length(strain_ffmd_up), "\n")
+cat("Total significant (lfd)-UP:",  length(strain_lfd_up),  "\n")
+
+###############################################################################
+# down
+strain_lfd_down  <- limma_results_M12_contrasts$Strain_in_LFD$down$Protein # 11
+strain_ffmd_down <- limma_results_M12_contrasts$Strain_in_FFMD$down$Protein # 196
+
+# Euler diagram
+fit_euler_strain_down <- euler(list(lfd = strain_lfd_down, ffmd = strain_ffmd_down))
+
+p_down <- plot(
+  fit_euler_strain_down,
+  quantities = TRUE,
+  labels     = TRUE,
+  fills      = c("#ece7f2", "#2b8cbe"),
+  edges      = TRUE,
+  main       = "Significant strain hits-DOWN"
+)
+
+print(p_down)
+ggsave(
+  file.path("doc", "euler_M12_Strain_effect_DOWN.png"),
+  plot = p_down, width = 4, height = 3, dpi = 300, bg = "white"
+)
+
+cat("Number unique to ffmd -DOWN:", length(setdiff(strain_ffmd_down, strain_lfd_down)), "\n")
+cat("Number unique to lfd-DOWN:",  length(setdiff(strain_lfd_down,  strain_ffmd_down)), "\n")
+cat("Number overlap (both)-DOWN:", length(intersect(strain_ffmd_down, strain_lfd_down)), "\n")
+cat("Total significant (ffmd)-DOWN:", length(strain_ffmd_down), "\n")
+cat("Total significant (lfd)-DOWN:",  length(strain_lfd_down),  "\n")
+```
+
+## Extract common proteins from limma table
+And merge two group tables with only interested proteins
+```{r}
+# get toptable data
+lfd_limma_table <- limma_results_M12_contrasts$Strain_in_LFD$top_table
+ffmd_limma_table <- limma_results_M12_contrasts$Strain_in_FFMD$top_table
+
+# Filter for common proteins
+common_lfd_table  <- lfd_limma_table[lfd_limma_table$Protein  %in% common_strain_proteins, ]
+common_ffmd_table <- ffmd_limma_table[ffmd_limma_table$Protein %in% common_strain_proteins, ]
+
+# Combined summary
+combined_common_table <- merge(
+  common_lfd_table,
+  common_ffmd_table,
+  by       = "Protein",
+  suffixes = c("_LFD", "_FFMD")
+)
+
+print(head(combined_common_table))
+```
+
+
+## Heatmap of common selected proteins
+```{r}
+strain_lfd_sig  <- limma_results_M12_contrasts$Strain_in_LFD$sig$Protein # 35
+strain_ffmd_sig <- limma_results_M12_contrasts$Strain_in_FFMD$sig$Protein # 463
+
+common_strain_proteins <- intersect(strain_lfd_sig, strain_ffmd_sig) # 16
+print(common_strain_proteins)
+
+# selecet proteins to show in heatmap
+selected_sites <- common_strain_proteins
+
+# find selected sites in data & filter
+sites_in_data <- selected_sites[selected_sites %in% rownames(df_M12)]
+filt_selected <- df_M12[sites_in_data, , drop=FALSE]
+
+# --- 4. Create the annotation for columns (samples) ---
+ann_col <- data.frame(
+  Strain = metadata_M12$strain,  # Or whatever column name in your metadata for strain
+  Diet   = metadata_M12$diet     # And for diet. You can include either, or both for richer annotation
+)
+rownames(ann_col) <- metadata_M12$new_sample_id
+
+heatmap_common_proteins_strain <- pheatmap(
+  as.matrix(filt_selected),
+  annotation_col          = ann_col,    # Adds the annotation bar for strain and diet
+  show_rownames           = TRUE,
+  show_colnames           = TRUE,
+  clustering_distance_rows= "euclidean",
+  clustering_distance_cols= "euclidean",
+  clustering_method       = "complete",
+  scale                   = "row",      # Z-score across proteins (rows) for relative comparison
+  main                    = "Heatmap of Common Strain-Difference Proteins",
+  na_col                  = "white"     # NAs will display as white
+)
+
+ggsave(file.path("doc", "heatmap_common_proteins_strain.png"),plot = heatmap_common_proteins_strain, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+## Heatmap of LFD uniq proteins
+```{r}
+# select proteins to show in heatmap
+selected_sites <- c(
+  "Hmgn1", "Q8BGN9", "Nat8f7", "Hps6", "TRM1", "Hdac11", "Csad",
+  "Irf2bp1", "Retsat", "Srd5a3", "Ctdspl2", "Crot", "Cyp2c40",
+  "Arsb", "Sardh", "Gtf2b", "Slc9a6", "Cask", "Acsf2"
+)
+
+# find selected sites in data & filter
+sites_in_data <- selected_sites[selected_sites %in% rownames(df_M12)]
+filt_selected <- df_M12[sites_in_data, , drop=FALSE]
+
+# --- 4. Create the annotation for columns (samples) ---
+ann_col <- data.frame(
+  Strain = metadata_M12$strain,  # Or whatever column name in your metadata for strain
+  Diet   = metadata_M12$diet     # And for diet. You can include either, or both for richer annotation
+)
+rownames(ann_col) <- metadata_M12$new_sample_id
+
+heatmap_LFD_uniq_strain <- pheatmap(
+  as.matrix(filt_selected),
+  annotation_col          = ann_col,    # Adds the annotation bar for strain and diet
+  show_rownames           = TRUE,
+  show_colnames           = TRUE,
+  clustering_distance_rows= "euclidean",
+  clustering_distance_cols= "euclidean",
+  clustering_method       = "complete",
+  scale                   = "row",      # Z-score across proteins (rows) for relative comparison
+  main                    = "Heatmap of strain difference-LFD unique proteins",
+  na_col                  = "white"     # NAs will display as white
+)
+
+ggsave(file.path("doc", "heatmap_LFD_uniq_strain.png"),plot = heatmap_LFD_uniq_strain, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+
+## ORA
+```{r}
+background_proteins <- rownames(df_M12)
+length(background_proteins) # 7612
+
+sig_ffmd_Ntac <- limma_results_M12_contrasts$Strain_in_FFMD$sig$Protein # 463
+sig_ffmd_Ntac_up <- limma_results_M12_contrasts$Strain_in_FFMD$up$Protein # 196
+sig_ffmd_Ntac_down <- limma_results_M12_contrasts$Strain_in_FFMD$down$Protein # 267
+
+
+
+ora_bp_Ntac_total <- enrichGO(
+    gene          = sig_ffmd_Ntac,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+
+ora_bp_Ntac_up <- enrichGO(
+    gene          = sig_ffmd_Ntac_up,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+ora_bp_Ntac_down <- enrichGO(
+    gene          = sig_ffmd_Ntac_down,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+
+
+total_dotplot <- dotplot(ora_bp_Ntac_total, showCategory = 10, title = "GOBP-ORA: total hits Ntac")
+up_dotplot <- dotplot(ora_bp_Ntac_up, showCategory = 10, title = "GOBP-ORA: up hits Ntac")
+down_dotplot <- dotplot(ora_bp_Ntac_down, showCategory = 10, title = "GOBP-ORA: down hits Ntac")
+
+
+
+ggsave(file.path("doc", "ora_Ntac_M12_dotplot_total.png"), plot = total_dotplot, width = 6, height = 5, dpi = 300, bg = "white") 
+ggsave(file.path("doc", "ora_Ntac_M12_dotplot_up.png"), plot = up_dotplot, width = 6, height = 5, dpi = 300, bg = "white") 
+ggsave(file.path("doc", "ora_Ntac_M12_dotplot_down.png"), plot = down_dotplot, width = 6, height = 5, dpi = 300, bg = "white") 
+
+```
+## Scatter plot
+```{r}
+fc_LFD_vec <- limma_results_M12_contrasts$Strain_in_LFD$top_table$logFC
+names(fc_LFD_vec) <- limma_results_M12_contrasts$Strain_in_LFD$top_table$Protein
+
+fc_FFMD_vec <- limma_results_M12_contrasts$Strain_in_FFMD$top_table$logFC
+names(fc_FFMD_vec) <- limma_results_M12_contrasts$Strain_in_FFMD$top_table$Protein
+
+common_proteins <- intersect(names(fc_LFD_vec), names(fc_FFMD_vec))
+uniq_LFD <- setdiff(names(fc_LFD_vec), names(fc_FFMD_vec))
+
+# --- Extract significant sets ---
+sig_LFD    <- limma_results_M12_contrasts$Strain_in_LFD$sig$Protein
+sig_FFMD <- limma_results_M12_contrasts$Strain_in_FFMD$sig$Protein
+
+# --- Combine into a single dataframe for plotting ---
+plot_df <- data.frame(
+  Protein     = common_proteins,
+  logFC_LFD     = fc_LFD_vec[common_proteins],
+  logFC_FFMD  = fc_FFMD_vec[common_proteins],
+  stringsAsFactors = FALSE
+)
+
+# --- Category assignment ---
+plot_df$sig_cat <- "Not sig"
+plot_df$sig_cat[plot_df$Protein %in% sig_LFD  & !(plot_df$Protein %in% sig_FFMD)] <- "Sig in LFD only"
+plot_df$sig_cat[plot_df$Protein %in% sig_FFMD & !(plot_df$Protein %in% sig_LFD)]  <- "Sig in FFMD only"
+plot_df$sig_cat[plot_df$Protein %in% sig_LFD  &  plot_df$Protein %in% sig_FFMD]   <- "Sig in both"
+
+plot_df$sig_cat <- factor(
+  plot_df$sig_cat,
+  levels = c("Sig in both", "Sig in LFD only", "Sig in FFMD only", "Not sig")
+)
+
+# --- Color scheme for plotting ---
+plot_colors <- c(
+  "Sig in both"      = "red",
+  "Sig in LFD only"  = "orange",
+  "Sig in FFMD only" = "royalblue2",
+  "Not sig"          = "grey70"
+)
+
+proteins_to_label <- c(
+  "Hmgn1", "Q8BGN9", "Nat8f7", "Hps6", "TRM1", "Hdac11", "Csad",
+  "Irf2bp1", "Retsat", "Srd5a3", "Ctdspl2", "Crot", "Cyp2c40",
+  "Arsb", "Sardh", "Gtf2b", "Slc9a6", "Cask", "Acsf2"
+)
+
+proteins_to_label <- limma_results_M12_contrasts$Strain_in_LFD$sig$Protein
+
+cor_coeff <- cor(plot_df$logFC_LFD, plot_df$logFC_FFMD, method = "pearson", use = "pairwise.complete.obs")
+cor_label <- paste("Pearson r =", round(cor_coeff, 2))
+
+scatter_plot_strain <- ggplot(plot_df, aes(x = logFC_LFD, y = logFC_FFMD, color = sig_cat)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_abline(intercept = 0, slope = 1, linetype = "dashed", color = "black") +
+  scale_color_manual(values = plot_colors) +
+  labs(
+    x = "logFC (Strain effect, LFD)",
+    y = "logFC (Strain effect, FFMD)",
+    color = "Significance Category",
+    title = "Scatter Plot: Strain logFC in LFD vs FFMD"
+  ) +
+  annotate(
+    "text",
+    x = min(plot_df$logFC_LFD,  na.rm = TRUE),
+    y = max(plot_df$logFC_FFMD, na.rm = TRUE),
+    label = cor_label,
+    hjust = 0, vjust = 1, size = 5, fontface = "bold", color = "black"
+  ) +
+  ggrepel::geom_text_repel(
+    data = subset(plot_df, Protein %in% proteins_to_label),
+    aes(label = Protein),
+    size = 4, box.padding = 5,
+    segment.color = "black", stroke = 2, max.overlaps = Inf
+  ) +
+  theme_classic()
+
+print(scatter_plot_strain)
+
+ggsave(file.path("doc", "scatter_plot_strain2.png"),
+       plot = scatter_plot_strain, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+
+# boxplot
+```{r}
+# --- 1) Make sure protein names are a column ---
+expr_df <- df_M12 %>%
+  as.data.frame() %>%
+  tibble::rownames_to_column("Protein")
+
+# --- 2) Convert wide expression matrix to tidy long data frame ---
+expr_long <- expr_df %>%
+  tidyr::pivot_longer(
+    cols      = -Protein,
+    names_to  = "new_sample_id",
+    values_to = "Expression"
+  )
+
+# --- 3) Join metadata ---
+expr_long <- expr_long %>%
+  dplyr::left_join(metadata_M12, by = c("new_sample_id" = "new_sample_id"))
+
+# --- 4) Ensure factor order for plotting ---
+expr_long$diet   <- factor(expr_long$diet,   levels = c("LFD", "FFMD"))
+expr_long$diet <- factor(expr_long$strain, levels = c("J", "Ntac"))
+expr_long$Group  <- factor(expr_long$Group,  levels = c("LFD_J", "LFD_Ntac", "FFMD_J", "FFMD_Ntac"))
+
+
+
+# Get top 6 significant proteins (Strain_in_FFMD)
+top_hits <- limma_results_M12_contrasts$Strain_in_FFMD$sig$Protein[1:6]
+
+# Generate a plot for each protein
+top_hits_plots <- lapply(top_hits, function(pid) {
+  plot_protein_profile(pid, expr_long)
+})
+
+# View first plot
+top_hits_plots[[1]]
+
+# ----------------------------
+# 2. Function to plot one protein profile
+# ----------------------------
+plot_protein_profile <- function(protein_id, data) {
+  data %>%
+    dplyr::filter(Protein == protein_id) %>%
+    ggplot2::ggplot(ggplot2::aes(x = diet, y = Expression, group = strain, color = strain)) +
+    ggplot2::stat_summary(fun = mean, geom = "point", size = 3, position = ggplot2::position_dodge(width = 0.2)) +
+    ggplot2::stat_summary(fun = mean, geom = "line",  size = 1) +
+    ggplot2::stat_summary(fun.data = mean_se, geom = "errorbar", width = 0.1,
+                          position = ggplot2::position_dodge(width = 0.2)) +
+    ggplot2::theme_minimal() +
+    ggplot2::labs(
+      title = paste("Profile plot for", protein_id),
+      y     = "log2 expression"
+    ) +
+    ggplot2::theme(
+      plot.title = ggplot2::element_text(face = "bold")
+    )
+}
+
+# Example: plot one known protein of interest
+plot_protein_profile("Fcgr4", expr_long)
+
+```
+
+
+

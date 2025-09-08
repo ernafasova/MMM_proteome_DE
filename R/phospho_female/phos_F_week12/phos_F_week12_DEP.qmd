@@ -1,0 +1,348 @@
+---
+title: "Phos_F_week12"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_phos_F_filtered.rda"))
+load(here::here("data/phos_F_removeoutlier_filt50_median.rda"))
+```
+
+# subgroup
+```{r}
+metadata_phos_F_filtered <- metadata_phos_F_filtered %>% dplyr::mutate(Group = paste(diet, strain, sep = "_"))
+
+metadata_phos_F12 <- metadata_phos_F_filtered %>% dplyr::filter(weeks == "12")
+phos_F12 <- phos_F_removeoutlier_filt50_median[, metadata_phos_F12$new_sample_id] # 14026
+dim(phos_F12) # 34 samples
+all(colnames(phos_F12) == metadata_phos_F12$new_sample_id)  # Should be TRUE
+
+
+metadata_phos_F12_J <- metadata_phos_F12 %>% dplyr::filter(strain == "J")
+phos_F12_J <- phos_F12[, metadata_phos_F12_J$new_sample_id, drop = FALSE]
+dim(phos_F12_J)  # 16
+all(colnames(phos_F12_J) == metadata_phos_F12_J$new_sample_id)  # Should be TRUE
+
+
+metadata_phos_F12_Ntac <- metadata_phos_F12 %>% dplyr::filter(strain == "Ntac")
+phos_F12_Ntac <- phos_F12[, metadata_phos_F12_Ntac$new_sample_id, drop = FALSE]
+dim(phos_F12_Ntac) # 18 samples
+all(colnames(phos_F12_Ntac) == metadata_phos_F12_Ntac$new_sample_id)  # Should be TRUE
+```
+# Pearson cor
+```{r}
+all(colnames(phos_F12) == metadata_phos_F12$new_sample_id)
+
+mat <- as.matrix(phos_F12)
+cor_matrix <- cor(mat, method = "pearson", use = "pairwise.complete.obs")
+
+# 2) Annotations
+annotation_col <- data.frame(
+  Diet   = metadata_phos_F12$diet,
+  Strain = metadata_phos_F12$strain,
+  row.names = metadata_phos_F12$new_sample_id
+)
+
+annotation_colors <- list(
+  Diet   = c(LFD = "#21908CFF", FFMD = "#D55E00"),
+  Strain = c(J = "#CCBB44", Ntac = "#AA3377")
+)
+
+F12_heatmap_corr <- pheatmap(
+  cor_matrix,
+  color = colorRampPalette(c("lightpink", "white", "lightskyblue3"))(100),
+  main = "Pearson Corr F 12w (phospho)",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = TRUE,
+  show_colnames = TRUE,
+  scale = "none",
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  breaks = seq(0.7, 1, length.out = 100)
+)
+
+cor_values  <- cor_matrix[upper.tri(cor_matrix)]
+min_corr    <- min(cor_values)
+max_corr    <- max(cor_values)
+median_corr <- median(cor_values)
+mean_corr   <- mean(cor_values)
+
+cat("Minimum correlation:", round(min_corr, 3), "\n")
+cat("Maximum correlation:", round(max_corr, 3), "\n")
+cat("Median correlation:",  round(median_corr, 3), "\n")
+cat("Mean correlation:",    round(mean_corr, 3), "\n")
+
+ggsave(file.path("doc", "F12_heatmap_corr.png"),
+       plot = F12_heatmap_corr, width = 10, height = 7, dpi = 300, bg = "white")
+
+```
+
+# PCA
+```{r}
+n_original <- nrow(phos_F12_batchcorr) # 14026
+df_nona <- na.omit(phos_F12_batchcorr) # 4173
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data12 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_phos_F12, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_phos_F12$new_sample_id)
+
+
+pca_day_batchorr12 <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "Phospho, F12 (n=34)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_batchorr12)
+plotly::ggplotly(pca_day_batchorr12)
+
+ggsave(file.path("doc", "pca_day_batchorr12.png"), plot = pca_day_batchorr12, width = 8, height = 6, dpi = 300, bg = "white")
+
+# beatbox batch
+pca_beatbox_batchcorr12 <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "Phospho, F12 (n=34)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_batchcorr12)
+plotly::ggplotly(pca_beatbox_batchcorr12)
+
+ggsave(file.path("doc", "pca_beatbox_batchcorr12.png"),plot = pca_beatbox_batchcorr12, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+pca_diet_batchcorr12 <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),,
+    plot_title = "Phospho, F12 (n=34)",
+    ellipse = TRUE
+)
+
+
+pca_strain_batchcorr12 <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),,
+    plot_title = "Phospho, F12 (n=34)",
+    ellipse = TRUE
+)
+
+
+ggsave(file.path("doc", "pca_day_batchcorr12.png"), plot = pca_day_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_batchcorr12.png"), plot = pca_beatbox_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_batchcorr12.png"), plot = pca_diet_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_batchcorr12.png"), plot = pca_strain_batchcorr12, width = 7, height = 5, dpi = 300, bg = "white")
+```
+# limma
+```{r}
+metadata_phos_F12 <- metadata_phos_F12 %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac"))
+  )
+levels(metadata_phos_F12$diet)
+levels(metadata_phos_F12$strain)
+
+table(metadata_phos_F12$diet)   # FFMD-24, LFD-12
+table(metadata_phos_F12$strain) # J-17, Ntac-18
+
+# create design matrix
+design_matrix <- model.matrix(~ diet + strain + beatbox_batch, data = metadata_phos_F12)
+colnames(design_matrix)
+fit  <- limma::lmFit(phos_F12, design_matrix)
+fit2 <- limma::eBayes(fit)
+
+# ---- Usage ----
+limma_results_F12_diet   <- get_limma_results(fit2, "dietFFMD",   "F12: Diet")
+limma_results_F12_strain <- get_limma_results(fit2, "strainNtac", "F12: Strain")
+
+# Diet histogram
+hist(limma_results_F12_diet$top_table$P.Value,   main = "F12: Diet main effect",   xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_F12_strain$top_table$P.Value, main = "F12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "F12_main_diet_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F12_diet$top_table$P.Value, main = "F12: Diet main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "F12_main_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F12_strain$top_table$P.Value, main = "F12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+```
+
+```{r}
+design_interaction <- model.matrix(~ diet * strain + beatbox_batch, data = metadata_phos_F12)
+colnames(design_interaction)
+
+fit_inter  <- limma::lmFit(phos_F12, design_interaction)
+fit2_inter <- limma::eBayes(fit_inter)
+colnames(fit2_inter$coefficients)
+
+limma_results_F12_interaction <- get_limma_results(
+  fit2_inter,
+  coef_name      = "dietFFMD:strainNtac",
+  contrast_label = "F12: Diet x Strain Interaction",
+  alpha          = 0.1
+)
+
+# p-value histogram
+png(file.path("doc", "F12_interaction_hist.png"),
+    width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(
+  limma_results_F12_interaction$top_table$P.Value,
+  main = "F12: Interaction (diet x strain)",
+  xlab = "P-value",
+  col  = "darkslategray4"
+)
+dev.off()
+```
+
+```{r}
+table(metadata_phos_F12$Group)
+metadatametadata_phos_F12up <- factor(metadata_phos_F12$Group, levels = c("LFD_J", "LFD_Ntac", "FFMD_J", "FFMD_Ntac"))
+levels(metadata_phos_F12$Group)
+
+design_group <- model.matrix(~ 0 + Group + beatbox_batch, data = metadata_phos_F12)
+colnames(design_group)
+colnames(design_group)[1:4] <- colnames(design_group)[1:4] |>
+  sub("^Group", "", x = _)
+
+contrast_matrix <- makeContrasts(
+  Diet_in_J       = FFMD_J     - LFD_J,
+  Diet_in_Ntac    = FFMD_Ntac  - LFD_Ntac,
+  Strain_in_LFD   = LFD_Ntac   - LFD_J,
+  Strain_in_FFMD  = FFMD_Ntac  - FFMD_J,
+  Interaction     = (FFMD_Ntac - LFD_Ntac) - (FFMD_J - LFD_J),
+  levels = design_group
+)
+
+fit  <- limma::lmFit(phos_F12, design_group)
+fit2 <- limma::contrasts.fit(fit, contrast_matrix)
+fit2 <- limma::eBayes(fit2)
+
+get_limma_results_contrast <- function(fit_obj, coef_name, label, alpha = 0.05) {
+  top_table <- limma::topTable(
+    fit_obj,
+    coef          = coef_name,
+    adjust.method = "BH",
+    sort.by       = "logFC",
+    number        = Inf
+  ) %>%
+    tibble::rownames_to_column("Protein")
+  
+  sig  <- top_table %>% dplyr::filter(adj.P.Val < alpha) %>% tidyr::drop_na()
+  up   <- sig %>% dplyr::filter(logFC > 0)
+  down <- sig %>% dplyr::filter(logFC < 0)
+  
+  # Print summary
+  cat("\n----", label, "----\n")
+  cat("Total significant:", nrow(sig), "\n")
+  cat("Up:", nrow(up), " | Down:", nrow(down), "\n")
+  
+  # Save histogram if you want
+  png(
+    file.path("doc", paste0(label, "_hist.png")),
+    width  = 5,
+    height = 4,
+    units  = "in",
+    res    = 300,
+    bg     = "white"
+  )
+  hist(
+    top_table$P.Value,
+    main = paste(label, "P-value histogram"),
+    xlab = "P-value",
+    col  = "darkslategray4"
+  )
+  dev.off()
+  
+  # Return results as list
+  return(list(
+    top_table = top_table,
+    sig       = sig,
+    up        = up,
+    down      = down
+  ))
+}
+
+# 2. Apply to All Contrasts in a Loop
+# Get the contrast names you defined:
+contrast_names <- colnames(contrast_matrix)
+
+# Loop through all contrasts:
+results_list <- list()
+for (cname in contrast_names) {
+  results_list[[cname]] <- get_limma_results_contrast(
+    fit2,
+    coef_name = cname,
+    label     = cname,
+    alpha     = 0.05  # or your chosen FDR threshold
+  )
+}
+
+# results_list will store each contrast’s full results for later inspection.
+# Plots and printouts are created for each contrast automatically.
+limma_results_F12_contrasts <- results_list
+```
+
+```{r}
+tmp <- phos_F_removeoutlier_filt50 %>% 
+    rownames_to_column("sites")
+tmp$sites <- sub("_.*", "", tmp$sites)
+length(unique(tmp$site))
+
+```
+

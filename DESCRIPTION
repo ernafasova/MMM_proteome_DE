@@ -9,3 +9,6 @@ Imports:
     rmarkdown
 URL: https://github.com/ernafasova/MMM_proteome_DE
 BugReports: https://github.com/ernafasova/MMM_proteome_DE/issues
+Depends: 
+    R (>= 2.10)
+LazyData: true

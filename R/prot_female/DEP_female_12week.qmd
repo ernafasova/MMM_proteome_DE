@@ -1,0 +1,1088 @@
+---
+title: "limma_female"
+format: html
+---
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_F.rda"))
+load(here::here("data/female_filt50_median_batchcorr.rda"))
+```
+
+
+# Subgroup
+```{r}
+metadata_F12 <- metadata_F %>% filter(weeks == "12")
+df_F12 <- female_filt50_median[, metadata_F12$new_sample_id] # 7642
+dim(df_F12) # 7642 proteins - 35 samples
+
+all(colnames(df_F12) == metadata_F12$new_sample_id)  # Should be TRUE
+setdiff(metadata_F12$new_sample_id, colnames(female_filt50_median))
+
+all(colnames(df_M12) == metadata_M12$new_sample_id)  # Should be TRUE
+```
+# PCA
+```{r}
+dim(df_F12) # 7642, 35 samples
+df_nona <- na.omit(df_F12) 
+
+n_original <- nrow(df_F12) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = T)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC): standard deviations squared.
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data12 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_F, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+# inner_join keeps only samples present in both pca_results and metadata.
+# Should be all TRUE / empty sets
+all(pca_results$new_sample_id %in% metadata_F12$new_sample_id)
+setdiff(pca_results$new_sample_id, metadata_F12$new_sample_id)
+
+
+
+###############################################################################
+pca_F12_diet <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = diet, shape = strain, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("LFD" = "#21908CFF", "FFMD" = "#D55E00" )) +
+  labs(
+    title = "PCA-Female, 12 weeks (n=35)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F12_diet)
+plotly::ggplotly(pca_F12_diet)
+
+ggsave(file.path("doc", "pca_F12_diet.png"), plot = pca_F12_diet, width = 6, height = 5, dpi = 300, bg = "white")
+
+
+
+
+
+#####################
+pca_F12_strain <- ggplot(pca_data12, aes(x = PC1, y = PC2, color = strain, shape = diet, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-Female, 12 weeks (n=35)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F12_strain)
+plotly::ggplotly(pca_F12_strain)
+
+ggsave(file.path("doc", "pca_F12_strain.png"), plot = pca_F12_strain, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Correlation
+```{r sample correlation}
+all(colnames(df_F12) == metadata_F12$new_sample_id) 
+
+mat <- as.matrix(df_F12)  
+cor_matrix <- cor(mat, method = "pearson", use = "pairwise.complete.obs")
+
+# 2) Annotations
+annotation_col <- data.frame(
+  Diet     = metadata_F12$diet,
+  Strain = metadata_F12$strain,
+  row.names = metadata_F12$new_sample_id
+)
+
+annotation_colors <- list(
+  Diet     = c(LFD = "#21908CFF", FFMD = "#D55E00"),
+  Strain = c(J = "#CCBB44", Ntac = "#AA3377") 
+)
+
+
+
+F12_heatmap_corr <- pheatmap(
+  cor_matrix,
+  color = colorRampPalette(c("lightpink", "white", "lightskyblue3"))(100),
+  main = "Pearson Correlation Heatmap Female 12week",
+  cluster_rows = FALSE,
+  cluster_cols = FALSE,
+  show_rownames = TRUE,   # 6 samples, display names if you wish
+  show_colnames = TRUE,
+  scale = "none",
+  annotation_col = annotation_col,
+  annotation_colors = annotation_colors,
+  breaks = seq(0.7, 1, length.out = 100) # adjust min as needed for your data
+)
+
+
+cor_values <- cor_matrix[upper.tri(cor_matrix)]
+min_corr <- min(cor_values)
+max_corr <- max(cor_values)
+median_corr <- median(cor_values)
+mean_corr <- mean(cor_values)
+cat("Minimum correlation:", round(min_corr, 3), "\n")
+cat("Maximum correlation:", round(max_corr, 3), "\n")
+cat("Median correlation:", round(median_corr, 3), "\n")
+cat("Mean correlation:", round(mean_corr, 3), "\n")
+
+ggsave(file.path("doc", "F12_heatmap_corr.png"), plot = F12_heatmap_corr, width = 10, height = 7, dpi = 300, bg = "white")
+
+```
+
+
+# Limma prep
+```{r}
+table(metadata_F12$diet) # FFMD-23, LFD-12
+table(metadata_F12$strain) # J-17, Ntac-18
+
+metadata_F12$diet <- factor(metadata_F12$diet, levels = c("LFD", "FFMD"))
+metadata_F12$strain <- factor(metadata_F12$strain, levels = c("J", "Ntac"))
+
+levels(metadata_F12$diet)
+levels(metadata_F12$strain)
+```
+```{r}
+design_matrix <- model.matrix(~Beatbox_batch + diet + strain, data = metadata_F12)
+colnames(design_matrix)
+fit <- lmFit(female_filt50_median, design_matrix)
+fit2 <- eBayes(fit)
+```
+
+
+# Main effect 
+Additive model gives avg diet effect across strains and avg strain effect across diets. 
+```{r main effect}
+# main effect
+design_matrix <- model.matrix(~ diet + strain, data = metadata_F12)
+colnames(design_matrix)
+fit <- lmFit(df_F12, design_matrix)
+fit2 <- eBayes(fit)
+
+################ diet
+F12_topTable_diet_maineffect <- limma::topTable(fit2, coef = "dietFFMD", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% tibble::rownames_to_column("Protein") 
+
+sig_F12_topTable_diet_maineffect <- F12_topTable_diet_maineffect %>% 
+    filter(adj.P.Val < 0.05) # 1347 hits
+
+sig_filt_F12_topTable_diet_maineffect <- na.omit(sig_F12_topTable_diet_maineffect)
+cat("Sig. proteins with diet main effect: ", nrow(sig_filt_F12_topTable_diet_maineffect ), "\n")
+# 1347
+
+
+################ strain 
+F12_topTable_strain_maineffect <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein")
+
+sig_F12_topTable_strain_maineffect <- F12_topTable_strain_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+sig_filt_F12_topTable_strain_maineffect <- na.omit(sig_F12_topTable_strain_maineffect)
+
+
+cat("Sig. proteins with strain main effect: ", nrow(sig_filt_F12_toptable_strain_maineffect ), "\n")
+# 39
+```
+
+# Histogram of p vals
+```{r}
+png(file.path("doc", "F12_diet_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F12_topTable_diet_maineffect$P.Value, main = "F12: Diet main effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+png(file.path("doc", "F12_strain_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F12_topTable_strain_maineffect$P.Value, main = "F12: Strain main effect", 
+     xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+```
+
+# Main Diet Effect
+## ORA - diet main effect hits
+```{r}
+total_hits <- sig_filt_F12_topTable_diet_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+
+up_hits <- sig_filt_F12_topTable_diet_maineffect %>%
+  filter(logFC > 0)
+
+down_hits <- sig_filt_F12_topTable_diet_maineffect %>%
+  filter(logFC < 0)
+
+
+sig_total_proteins <- total_hits$Protein
+sig_up_proteins <- up_hits$Protein
+sig_down_proteins <- down_hits$Protein
+background_proteins <- rownames(df_F12)
+
+#######
+
+ora_bp_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+ora_mf_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_cc_main_diet_up <- enrichGO(
+    gene          = sig_up_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+
+oraBP_diet_up <- dotplot(ora_bp_main_diet_up, showCategory = 10, title = "GOBP F12- main diet effect, up")
+oraMF_diet_up <- dotplot(ora_mf_main_diet_up, showCategory = 10, title = "GOMF F12- main diet effect, up")
+orCC_diet_up <- dotplot(ora_cc_main_diet_up, showCategory = 10, title = "GOBP F12- main diet effect, up")
+
+print(ora_bp_main_diet_up)
+print(ora_mf_main_diet_up)
+print(ora_cc_main_diet_up)
+
+ggsave(file.path("doc", "F12_oraBP_maineffect_diet_up.png"), plot = oraBP_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F12_oraMF_maineffect_diet_up.png"), plot = oraMF_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F12_oraCC_maineffect_diet_up.png"), plot = orCC_diet_up, width = 6, height = 6, dpi = 300, bg = "white")
+
+
+##################### downregulated proteins
+ora_bp_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "BP",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_mf_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+ora_cc_main_diet_down <- enrichGO(
+    gene          = sig_down_proteins,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "CC",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+oraBP_diet_down <- dotplot(ora_bp_main_diet_down, showCategory = 10, title = "GOBP F12 - main diet effect, down")
+oraMF_diet_down <- dotplot(ora_mf_main_diet_down, showCategory = 10, title = "GOMF F12 - main diet effect, down")
+oraCC_diet_down <- dotplot(ora_cc_main_diet_down, showCategory = 10, title = "GOCC F12 - main diet effect, down")
+
+print(ora_bp_main_diet_down)
+print(ora_mf_main_diet_down)
+print(ora_cc_main_diet_down)
+
+ggsave(file.path("doc", "F12_oraBP_maineffect_diet_down.png"), plot = oraBP_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F12_oraMF_maineffect_diet_down.png"), plot = oraMF_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+ggsave(file.path("doc", "F12_oraCC_maineffect_diet_down.png"), plot = oraCC_diet_down, width = 6, height = 6, dpi = 300, bg = "white")
+```
+
+
+## Volcano plot
+```{r}
+create_volcano_plot <- function(
+  df,
+  label_proteins = NULL,
+  top_n = 10,
+  title = "Volcano Plot",
+  x_label = "Log2 Fold Change",
+  y_label = "-Log10(P-value)"
+) {
+  # Ensure Protein column exists
+  if (!("Protein" %in% colnames(df))) {
+    df$Protein <- rownames(df)
+  }
+  # Assign significance group
+  df <- df %>% 
+    dplyr::mutate(
+      SigGroup = dplyr::case_when(
+        adj.P.Val < 0.05 & logFC > 0 ~ "Up",
+        adj.P.Val < 0.05 & logFC < 0 ~ "Down",
+        TRUE ~ "NotSig"
+      ),
+      # needed for plotly (interact)
+      tooltip = paste(
+        "Protein:", Protein,
+        "<br>logFC:", signif(logFC, 3),
+        "<br>P.Value:", signif(P.Value, 3),
+        "<br>Adj.P.Val:", signif(adj.P.Val, 3),
+        "<br>SigGroup:", SigGroup
+      )
+    )
+  # Calculate significant counts
+  up_count <- sum(df$SigGroup == "Up", na.rm = TRUE)
+  down_count <- sum(df$SigGroup == "Down", na.rm = TRUE)
+  # Select proteins to label
+  if (!is.null(label_proteins)) {
+    label_df <- dplyr::filter(df, Protein %in% label_proteins)
+  } else {
+    top_up <- df %>% dplyr::filter(SigGroup == "Up") %>% dplyr::arrange(P.Value) %>% head(top_n)
+    top_down <- df %>% dplyr::filter(SigGroup == "Down") %>% dplyr::arrange(P.Value) %>% head(top_n)
+    label_df <- dplyr::bind_rows(top_up, top_down)
+  }
+  xmax <- max(df$logFC, na.rm = TRUE)
+  xmin <- min(df$logFC, na.rm = TRUE)
+  ymax <- max(-log10(df$P.Value), na.rm = TRUE)
+  y_anno <- ymax * 0.04
+  # --- ADD text = tooltip in aes() for the base plot ---
+  p <- ggplot2::ggplot(df, ggplot2::aes(
+      x = logFC,
+      y = -log10(P.Value),
+      color = SigGroup,
+      text = tooltip
+    )) +
+    ggplot2::geom_point(alpha = 0.4, size = 2) +
+    ggplot2::scale_color_manual(
+      values = c("Up" = "#DC4131", "Down" = "#4390DE", "NotSig" = "grey70")
+    ) +
+    ggrepel::geom_label_repel(
+      data = label_df,
+      ggplot2::aes(label = Protein, x = logFC, y = -log10(P.Value)),
+      fill = "white",
+      color = "black",
+      box.padding = 0.5,
+      segment.color = "grey50",
+      size = 3.5,
+      show.legend = FALSE,
+      inherit.aes = FALSE
+    ) +
+    ggplot2::labs(title = title, x = x_label, y = y_label) +
+    ggplot2::theme_minimal(base_size = 15) +
+    ggplot2::theme(
+      legend.position = "none",
+      plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
+      panel.border = ggplot2::element_rect(color = "black", fill = NA, size = 1)
+    ) +
+    ggplot2::annotate("text", x = xmax * 0.75, y = y_anno,
+      label = paste0("\u2192 ", up_count), color = "#DC4131", size = 4, hjust = 0) +
+    ggplot2::annotate("text", x = xmin * 0.75, y = y_anno,
+      label = paste0("\u2190 ", down_count), color = "#4390DE", size = 4, hjust = 1)
+  return(p)
+}
+
+F12_volcano_diet_maineffect <- create_volcano_plot(F12_topTable_diet_maineffect, top_n = 20, title = "Female-12week: FFMD vs LFD")
+print(F12_volcano_diet_maineffect)
+
+
+# with custom labels
+my_proteins <- c("Fasn", "Acly", "Sdc1", "Acox1", "Cyp2e1", "Cd36", "Col1a1", "Col3a1", "Alpl", "Lpl", "Ppara", "Cpt1a", "Mttp")  # put your proteins here
+setdiff(my_proteins, F12_topTable_diet_maineffect$Protein)
+
+F12_volcano_diet_maineffect <- create_volcano_plot(
+  F12_topTable_diet_maineffect,
+  label_proteins = my_proteins,
+  title = "Female-12week: FFMD vs LFD"
+)
+
+print(F12_volcano_diet_maineffect)
+plotly::ggplotly(F12_volcano_diet_maineffect)
+
+ggsave(file.path("doc", "F12_volcano_diet_maineffect.png"), plot = F12_volcano_diet_maineffect, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+## Single profile plot
+```{r}
+plot_data <- df_F12 %>%
+  tibble::rownames_to_column("protein") %>%
+  filter(protein == "Fasn") %>%
+  pivot_longer(
+    cols = -protein,
+    names_to = "new_sample_id",
+    values_to = "log2_intensity"
+  ) %>%
+  left_join(metadata_F12, by = "new_sample_id")
+
+# Simple boxplot
+ggplot(plot_data, aes(x = diet, y = log2_intensity, fill = diet)) +
+  geom_boxplot() +
+  geom_jitter(width = 0.15, size = 2, alpha = 0.7) +
+  labs(title = "Fasn", x = "Diet", y = "Log2 Intensity") +
+  theme_bw()
+
+```
+
+## Profile plot1 function
+```{r}
+profile_boxplot <- function(
+        protein_id,
+        quant_data,
+        metadata_df,
+        new_id_col = "new_sample_id",
+        group_col = "diet",
+        title_size = 16,
+        axis_title_size = 14,
+        axis_text_size = 12,
+        custom_colors = NULL
+) {
+
+    # --- 1) Prepare the data ---------------------------------------------------
+    plot_data <- quant_data %>%
+        tibble::rownames_to_column("protein") %>%
+        dplyr::filter(protein == protein_id) %>%
+        tidyr::pivot_longer(
+            cols = -protein,
+            names_to = new_id_col,
+            values_to = "log2_intensity"
+        ) %>%
+        dplyr::left_join(metadata_df, by = new_id_col)
+
+    if (nrow(plot_data) == 0) {
+        stop(paste("Protein", protein_id, "not found in the dataset."))
+    }
+
+    # --- 2) Set colors if not provided -----------------------------------------
+    if (is.null(custom_colors)) {
+        groups <- unique(plot_data[[group_col]])
+        custom_colors <- scales::hue_pal()(length(groups))
+        names(custom_colors) <- groups
+    }
+
+    # --- 3) Plot ---------------------------------------------------------------
+    p <- ggplot2::ggplot(
+        plot_data,
+        ggplot2::aes_string(x = group_col, y = "log2_intensity", fill = group_col)
+    ) +
+        ggplot2::geom_boxplot(
+            width = 0.6, alpha = 0.6,
+            outlier.shape = NA, color = "black"
+        ) +
+        ggplot2::geom_jitter(
+            width = 0.15, size = 2.5, alpha = 0.8,
+            color = "black"
+        ) +
+        ggplot2::scale_fill_manual(values = custom_colors) +
+        ggplot2::labs(
+            title = protein_id,
+            x = group_col,
+            y = "Log2 Intensity"
+        ) +
+        ggplot2::theme_bw(base_size = 14) +
+        ggplot2::theme(
+            plot.title = ggplot2::element_text(hjust = 0.5, face = "bold", size = title_size),
+            axis.title = ggplot2::element_text(size = axis_title_size),
+            axis.text = ggplot2::element_text(size = axis_text_size, color = "black"),
+            legend.position = "none",
+            panel.border = ggplot2::element_rect(color = "black", size = 0.8),
+            panel.grid.major = ggplot2::element_line(color = "grey85", size = 0.3),
+            panel.grid.minor = ggplot2::element_blank()
+        )
+
+    return(p)
+}
+
+
+# how to use a function
+p1 <- profile_boxplot(
+  protein_id = "Acox1",
+  quant_data = df_F12,
+  metadata_df = metadata_F12,
+  new_id_col = "new_sample_id",
+  group_col = "diet",
+  custom_colors = c("FFMD" = "#D55E00", "LFD" = "#21908CFF")
+)
+
+print(p1)
+```
+
+
+
+
+## Profile plot2 function
+```{r}
+profile_boxplot2 <- function(
+    protein_id,
+    quant_data,
+    metadata_df,
+    stats_table       = NULL,           # statistical results
+    stats_protein_col = NULL,           # column with protein IDs, NULL = use rownames
+    stats_pval_col    = "Adj.P.Val",    # column with adjusted p-values
+    new_id_col        = "new_sample_id",# joins quant_data colnames to metadata
+    group_col         = "diet",
+    custom_colors     = NULL
+) {
+
+  # --- 1) Prepare plotting data ----------------------------------------------
+  plot_data <- quant_data %>%
+    tibble::rownames_to_column("protein") %>%
+    dplyr::filter(protein == protein_id) %>%
+    tidyr::pivot_longer(
+      cols = -protein,
+      names_to = new_id_col,
+      values_to = "log2_intensity"
+    ) %>%
+    dplyr::left_join(metadata_df, by = new_id_col)
+
+  if (nrow(plot_data) == 0) {
+    stop(paste("Protein", protein_id, "not found in quant_data."))
+  }
+
+  # --- 2) Try to find significance -------------------------------------------
+  sig_label <- NULL
+  if (!is.null(stats_table)) {
+    stats_df <- stats_table
+
+    # Use stats_protein_col if provided, else treat rownames as IDs
+    if (!is.null(stats_protein_col) && stats_protein_col %in% colnames(stats_df)) {
+      pval <- stats_df %>%
+        dplyr::filter(.data[[stats_protein_col]] == protein_id) %>%
+        dplyr::pull(.data[[stats_pval_col]])
+    } else {
+      stats_df <- tibble::rownames_to_column(stats_df, "tmp_prot_id")
+      pval <- stats_df %>%
+        dplyr::filter(tmp_prot_id == protein_id) %>%
+        dplyr::pull(.data[[stats_pval_col]])
+    }
+
+    if (length(pval) == 1) {
+      sig_label <- ifelse(
+        pval < 0.001, "***",
+        ifelse(pval < 0.01, "**",
+               ifelse(pval < 0.05, "*", "ns"))
+      )
+    }
+  }
+
+  # --- 3) Set up colors ------------------------------------------------------
+  if (is.null(custom_colors)) {
+    groups <- unique(plot_data[[group_col]])
+    custom_colors <- scales::hue_pal()(length(groups))
+    names(custom_colors) <- groups
+  }
+
+  # --- 4) Base plot ----------------------------------------------------------
+  p <- ggplot2::ggplot(
+    plot_data,
+    ggplot2::aes_string(x = group_col, y = "log2_intensity", fill = group_col)
+  ) +
+    ggplot2::geom_boxplot(
+      width = 0.6, alpha = 0.6,
+      outlier.shape = NA, color = "black"
+    ) +
+    ggplot2::geom_jitter(
+      width = 0.15, size = 2.5, alpha = 0.8,
+      color = "black"
+    ) +
+    ggplot2::scale_fill_manual(values = custom_colors) +
+    ggplot2::labs(
+      title = protein_id,
+      x = group_col,
+      y = "Log2 Intensity"
+    ) +
+    ggplot2::theme_bw(base_size = 14) +
+    ggplot2::theme(
+      plot.title      = ggplot2::element_text(hjust = 0.5, face = "bold"),
+      axis.title      = ggplot2::element_text(size = 14),
+      axis.text       = ggplot2::element_text(size = 12, color = "black"),
+      legend.position = "none",
+      panel.border    = ggplot2::element_rect(color = "black", size = 0.8),
+      panel.grid.major= ggplot2::element_line(color = "grey85", size = 0.3),
+      panel.grid.minor= ggplot2::element_blank()
+    )
+
+  # --- 5) Add significance bar if available ---------------------------------
+  if (!is.null(sig_label)) {
+    y_max <- max(plot_data$log2_intensity, na.rm = TRUE)
+    p <- p +
+      ggplot2::annotate(
+        "text", x = 1.5, y = y_max + 0.2,
+        label = sig_label, size = 6, fontface = "bold"
+      ) +
+      ggplot2::annotate(
+        "segment", x = 1, xend = 2,
+        y = y_max + 0.1, yend = y_max + 0.1, size = 0.6
+      ) +
+      ggplot2::annotate(
+        "segment", x = 1, xend = 1,
+        y = y_max + 0.05, yend = y_max + 0.1, size = 0.6
+      ) +
+      ggplot2::annotate(
+        "segment", x = 2, xend = 2,
+        y = y_max + 0.05, yend = y_max + 0.1, size = 0.6
+      )
+  }
+
+  return(p)
+}
+
+```
+
+
+
+```{r}
+p_acox1 <- profile_boxplot2("Acox1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+
+
+p_Cpt1a <- profile_boxplot2("Cpt1a",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+
+p_Cd36 <- profile_boxplot2("Cd36",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+p_Fasn <- profile_boxplot2("Fasn",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+p_Scd1<- profile_boxplot2("Scd1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+p_Cpt1a<- profile_boxplot2("Cpt1a",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+#Antioxidant defense (expected to be up in FFMd: MASH marker)
+p_Prdx1<- profile_boxplot2("Prdx1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Mitochondrial ROS detox (up)
+p_Sod2 <- profile_boxplot2("Sod2",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Detox enzyme (up)
+p_Gstp1 <- profile_boxplot2("Gstp1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# ↓ early mitochondrial damage
+p_Ndufs3 <- profile_boxplot2("Ndufs3",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# ER stress happens before massive inflammation
+#
+p_Hspa5 <- profile_boxplot2("Hspa5",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Macrophage activation marker - up
+p_Lgals3 <- profile_boxplot2("Lgals3",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Endothelial adhesion molecule
+p_Vcam1 <- profile_boxplot2("Vcam1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+```
+
+### Early Fibrosis / ECM Remodeling
+```{r}
+# Endothelial adhesion molecule, ↑ (mild elevation in early fibrosis)
+p_Col1a1 <- profile_boxplot2("Col1a1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# 	Basement membrane remodeling ↑
+p_Lamc1<- profile_boxplot2("Lamc1",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Matricellular protein  ↑
+p_Sparc<- profile_boxplot2("Sparc",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+```
+
+
+### Plasma Biomarkers frequently used in translational studies
+```{r}
+# Haptoglobin - acute phase protein ↑
+p_Hp <- profile_boxplot2("Hp",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+
+# Innate immune modulator	↑
+p_Lcn2 <- profile_boxplot2("Lcn2",
+                df_F12,
+                metadata_F12,
+                stats_table = F12_topTable_diet_maineffect,
+                stats_protein_col = "Protein",  # NULL means use rownames
+                stats_pval_col = "adj.P.Val",
+                new_id_col = "new_sample_id",
+                group_col = "diet",
+                custom_colors = c("FFMD" = "#E69F00", "LFD" = "#0072B2"))
+```
+
+
+### save profile plots
+```{r}
+# Store all plots in a named list
+plots <- list(
+  p_acox1  = p_acox1,
+  p_Cpt1a  = p_Cpt1a,
+  p_Cd36   = p_Cd36,
+  p_Fasn   = p_Fasn,
+  p_Scd1   = p_Scd1,
+  p_Prdx1  = p_Prdx1,
+  p_Sod2   = p_Sod2,
+  p_Gstp1  = p_Gstp1,
+  p_Ndufs3 = p_Ndufs3,
+  p_Hspa5  = p_Hspa5,
+  p_Lgals3 = p_Lgals3,
+  p_Vcam1  = p_Vcam1,
+  p_Col1a1 = p_Col1a1,
+  p_Lamc1  = p_Lamc1,
+  p_Sparc  = p_Sparc,
+  p_Hp     = p_Hp,
+  p_Lcn2   = p_Lcn2
+)
+
+# Loop through and save each plot
+for (nm in names(plots)) {
+  ggsave(
+    filename = file.path("doc", paste0(nm, ".png")),
+    plot     = plots[[nm]],
+    width    = 3,
+    height   = 4,
+    dpi      = 300,
+    bg       = "white"
+  )
+}
+
+```
+
+
+### top 20 proteins
+```{r}
+# Vector of proteins you want to plot
+proteins_to_plot <- c("Apoa4", "Plin4", "Acaa1b", "Gpat3",
+  "Fabp5", "Kyat1", "Gcat", "Ppp1r3g", "Irf6",
+  "Phlda1", "Dnpep", "Avpr1a", "Mvk", "Urad", "Egfr", "Got1"
+)
+
+# Generate plots in a named list
+plots <- lapply(proteins_to_plot, function(prot) {
+  profile_boxplot2(
+    protein_id        = prot,
+    quant_data        = df_F12,
+    metadata_df       = metadata_F12,
+    stats_table       = F12_topTable_diet_maineffect,
+    stats_protein_col = "Protein",  # NULL means use rownames
+    stats_pval_col    = "adj.P.Val",
+    new_id_col        = "new_sample_id",
+    group_col         = "diet",
+    custom_colors     = c("FFMD" = "#E69F00", "LFD" = "#0072B2")
+  )
+})
+
+# Give names to list elements
+names(plots) <- paste0("p_", proteins_to_plot)
+
+# Save all plots
+for (nm in names(plots)) {
+  ggsave(
+    filename = file.path("doc", paste0(nm, ".png")),
+    plot     = plots[[nm]],
+    width    = 3,
+    height   = 4,
+    dpi      = 300,
+    bg       = "white"
+  )
+}
+
+```
+
+
+# Main strain effect (diet independent)
+Notes: the resulting hits (like Nnt↑, Gck↑, Deptor↓, etc.) are statistically significant differences between strains that hold regardless of whether the animal was on FFMD or LFD. That means these differences existed in both diet groups at week 12 —they are not caused by the diet factor in your model, but instead are:
+Constitutive / inherent differences due to genetic background (C57BL/6NTac vs C57BL/6J).
+
+## Volcano
+```{r}
+F12_volcano_strain_maineffect <- create_volcano_plot(F12_topTable_strain_maineffect, top_n = 20, title = "Female-12week: Ntac vs J")
+print(F12_volcano_strain_maineffect)
+
+ggsave(file.path("doc", "F12_volcano_strain_maineffect.png"), plot = F12_volcano_strain_maineffect, width = 7, height = 5, dpi = 300, bg = "white")
+
+
+total_hits <- sig_filt_F12_topTable_strain_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+
+up_hits <- sig_filt_F12_topTable_strain_maineffect %>%
+  filter(logFC > 0)
+
+down_hits <- sig_filt_F12_topTable_strain_maineffect %>%
+  filter(logFC < 0)
+
+
+sig_total_proteins <- total_hits$Protein # 39
+sig_up_proteins <- up_hits$Protein # 20
+sig_down_proteins <- down_hits$Protein  # 19
+```
+
+## profile plots
+```{r}
+# Vector of proteins you want to plot
+# Vector of proteins you want to plot
+proteins_to_plot <- c(
+  # Upregulated
+  "Hebp1", "Tymp", "Nnt", "Dhtkd1", "P10404", "P03356", "Vamp3", "Vamp2",
+  # Downregulated
+  "Tmem179b", "Tmem254", "P04945", "Cdh1", "Csad", "Pck2", "Cyp2f2"
+)
+
+
+# Generate plots in a named list
+plots <- lapply(proteins_to_plot, function(prot) {
+  profile_boxplot2(
+    protein_id        = prot,
+    quant_data        = df_F12,
+    metadata_df       = metadata_F12,
+    stats_table       = F12_topTable_strain_maineffect,
+    stats_protein_col = "Protein",  # NULL means use rownames
+    stats_pval_col    = "adj.P.Val",
+    new_id_col        = "new_sample_id",
+    group_col         = "strain",
+    custom_colors     = c("Ntac" = "#AA3377", "J" = "#CCBB44")
+  )
+})
+
+# Give names to list elements
+names(plots) <- paste0("p_", proteins_to_plot)
+
+# Save all plots
+for (nm in names(plots)) {
+  ggsave(
+    filename = file.path("doc", paste0(nm, ".png")),
+    plot     = plots[[nm]],
+    width    = 3,
+    height   = 4,
+    dpi      = 300,
+    bg       = "white"
+  )
+}
+```
+
+
+
+# Limma interaction effects
+No interaction! Both strains change by the same amount under FFMD. That means  “diet effect” is essentially parallel for the two strains at this short time point.
+Many proteins have huge diet main effects (1347 hits).
+Many proteins have notable strain main effects (~39 significant baseline hits).
+But strain × diet interplay hasn’t emerged yet — i.e., in the early stage, NTac and J respond in roughly the same direction and magnitude to FFMD.
+```{r}
+# Interaction tells you how much extra (or less) the FFMD effect is in Ntac compared with J at week 12.
+metadata_F12$diet   <- factor(metadata_F12$diet,   levels = c("LFD", "FFMD"))
+metadata_F12$strain <- factor(metadata_F12$strain, levels = c("J", "Ntac"))
+
+design_matrix <- model.matrix(~ diet * strain, data = metadata_F12)
+colnames(design_matrix)
+
+fit  <- lmFit(df_F12, design_matrix)
+fit2 <- eBayes(fit)
+
+F12_topTable_interaction <- limma::topTable(fit2, coef = "dietFFMD:strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% tibble::rownames_to_column("Protein") 
+
+sig_F12_topTable_interaction <- F12_topTable_interaction %>% 
+    filter(adj.P.Val < 0.05) # 1347 hits
+# 0
+
+top_prot <- "Gck" # replace with your protein of interest
+ggplot(metadata_F12,
+       aes(x = diet,
+           y = as.numeric(df_F12[top_prot, ]),
+           color = strain)) +
+  geom_point(position = position_jitter(width = 0.1)) +
+  geom_line(aes(group = strain))
+```
+```{r}
+library(dplyr)
+
+metadata_F12 %>%
+  mutate(value = as.numeric(df_F12["Gck", ])) %>%
+  group_by(diet, strain) %>%
+  summarise(
+    mean_val = mean(value, na.rm = TRUE),
+    sd_val   = sd(value, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+```
+

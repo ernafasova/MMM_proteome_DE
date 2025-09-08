@@ -1,0 +1,193 @@
+---
+title: "DEP_female_24week"
+format: html
+---
+
+
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata_F.rda"))
+load(here::here("data/female_filt50_median_batchcorr.rda"))
+```
+
+# Subgroup
+```{r}
+metadata_F24 <- metadata_F %>% filter(weeks == "24")
+df_F24<- female_filt50_median_batchcorr[, metadata_F24$new_sample_id] # 7642
+dim(df_F24) # 7642 proteins - 14 samples
+
+all(colnames(df_F24) == metadata_F24$new_sample_id)  # Should be TRUE
+```
+
+```{r}
+dim(df_F24) # adjust dataset if needed
+df_nona <- na.omit(df_F24) 
+
+n_original <- nrow(df_F24) 
+n_nona <- nrow(df_nona) 
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")
+
+pca_data24 <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  inner_join(metadata_F24, by = "new_sample_id") %>%
+  mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+all(pca_results$new_sample_id %in% metadata_F24$new_sample_id)
+setdiff(pca_results$new_sample_id, metadata_F24$new_sample_id)
+
+
+###############################################################################
+pca_F24_diet <- ggplot(pca_data24, aes(x = PC1, y = PC2, color = diet, shape = strain, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("LFD" = "#21908CFF", "FFMD" = "#D55E00" )) +
+  labs(
+    title = "PCA-Female, 24 weeks (n=35)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F24_diet)
+plotly::ggplotly(pca_F24_diet)
+
+ggsave(file.path("doc", "pca_F24_diet.png"), plot = pca_F24_diet, width = 6, height = 5, dpi = 300, bg = "white")
+
+
+
+#####################
+pca_F24_strain <- ggplot(pca_data24, aes(x = PC1, y = PC2, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-Female, 24 weeks (n=35)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_F24_strain)
+plotly::ggplotly(pca_F24_strain)
+
+ggsave(file.path("doc", "pca_F24_strain.png"), plot = pca_F24_strain, width = 6, height = 5, dpi = 300, bg = "white")
+
+```
+```{r}
+table(metadata_F24$diet) # FFMD-18, LFD-6
+table(metadata_F24$strain) # J-17, Ntac-18
+
+metadata_F24$diet <- factor(metadata_F24$diet, levels = c("LFD", "FFMD"))
+metadata_F24$strain <- factor(metadata_F24$strain, levels = c("J", "Ntac"))
+
+levels(metadata_F24$diet)
+levels(metadata_F24$strain)
+
+# main effect
+design_matrix <- model.matrix(~ diet + strain, data = metadata_F24)
+colnames(design_matrix)
+fit <- lmFit(df_F24, design_matrix)
+fit2 <- eBayes(fit)
+
+################ diet
+F24_topTable_diet_maineffect <- limma::topTable(fit2, coef = "dietFFMD", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein") 
+
+sig_F24_topTable_diet_maineffect <- F24_topTable_diet_maineffect %>% 
+    filter(adj.P.Val < 0.05) # 1322
+
+sig_filt_F24_topTable_diet_maineffect <- na.omit(sig_F24_topTable_diet_maineffect)
+cat("Sig. proteins with diet main effect: ", nrow(sig_filt_F24_topTable_diet_maineffect ), "\n")
+
+
+################ strain 
+F24_topTable_strain_maineffect <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% 
+    tibble::rownames_to_column("Protein")
+
+sig_F24_topTable_strain_maineffect <- F24_topTable_strain_maineffect %>% 
+    filter(adj.P.Val < 0.05)
+sig_filt_F24_topTable_strain_maineffect <- na.omit(sig_F24_topTable_strain_maineffect) # 84
+
+cat("Sig. proteins with strain main effect: ", nrow(sig_filt_F24_topTable_strain_maineffect ), "\n")
+
+```
+# Histogram
+```{r}
+png(file.path("doc", "F24_diet_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F24_topTable_diet_maineffect$P.Value, 
+     main = "F24: Diet main effect", 
+     xlab = "P-value", 
+     col = "darkslategray4")
+dev.off()
+
+png(file.path("doc", "F24_strain_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(F24_topTable_strain_maineffect$P.Value, 
+     main = "F24: Strain main effect", 
+     xlab = "P-value", 
+     col = "darkslategray4")
+dev.off()
+
+```
+# Interaction
+```{r}
+# Interaction tells you how much extra (or less) the FFMD effect is in Ntac compared with J at week 24.
+metadata_F24$diet   <- factor(metadata_F24$diet,   levels = c("LFD", "FFMD"))
+metadata_F24$strain <- factor(metadata_F24$strain, levels = c("J", "Ntac"))
+
+design_matrix <- model.matrix(~ diet * strain, data = metadata_F24)
+colnames(design_matrix)
+
+fit  <- lmFit(df_F24, design_matrix)
+fit2 <- eBayes(fit)
+
+F24_topTable_interaction <- limma::topTable(fit2, coef = "dietFFMD:strainNtac", 
+                                            adjust.method = "BH", sort.by = "logFC", 
+                                            number = Inf) %>% 
+  tibble::rownames_to_column("Protein") 
+
+sig_F24_topTable_interaction <- F24_topTable_interaction %>% 
+    filter(adj.P.Val < 0.05) # significant hits
+# 0
+
+top_prot <- "Gck" # replace with your protein of interest
+ggplot(metadata_F24,
+       aes(x = diet,
+           y = as.numeric(df_F24[top_prot, ]),
+           color = strain)) +
+  geom_point(position = position_jitter(width = 0.1)) +
+  geom_line(aes(group = strain))
+
+```
+

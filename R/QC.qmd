@@ -1,7 +1,0 @@
----
-title: "QC"
-author: "DE"
-format: html
----
-
-

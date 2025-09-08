@@ -1,0 +1,73 @@
+---
+title: "Untitled"
+format: html
+---
+
+```{r}
+
+metadata_M <- metadata_M %>% mutate(Group = paste(diet, strain, sep = "_"))
+metadata_M12 <- metadata_M %>% filter(weeks == "12")
+df_M12 <- male_filt_median_batchcorr[, metadata_M12$new_sample_id] # 7642
+dim(df_M12) # 36 samples
+all(colnames(df_M12) == metadata_M12$new_sample_id)  # Should be TRUE
+
+```
+
+```{r}
+table(metadata_M12$diet)   # FFMD-24, LFD-12
+table(metadata_M12$strain) # J-17, Ntac-18
+
+metadata_M12$diet <- factor(metadata_M12$diet, levels = c("LFD", "FFMD"))
+metadata_M12$strain <- factor(metadata_M12$strain, levels = c("J", "Ntac"))
+
+levels(metadata_M12$diet)
+levels(metadata_M12$strain)
+
+# create design matrix
+design_matrix <- model.matrix(~ diet + strain, data = metadata_M12)
+colnames(design_matrix)
+fit  <- lmFit(df_M12, design_matrix)
+fit2 <- eBayes(fit)
+
+################ diet
+M12_topTable_diet_maineffect <- limma::topTable(fit2, coef = "dietFFMD", adjust.method = "BH", sort.by = "logFC", number = Inf ) %>% tibble::rownames_to_column("Protein")
+sig_M12_topTable_diet_maineffect <- M12_topTable_diet_maineffect %>% dplyr::filter(adj.P.Val < 0.05)
+sig_filt_M12_topTable_diet_maineffect <- na.omit(sig_M12_topTable_diet_maineffect)
+cat("Sig. proteins with diet main effect: ", nrow(sig_filt_M12_topTable_diet_maineffect), "\n")
+
+################ strain 
+M12_topTable_strain_maineffect <- limma::topTable(fit2, coef = "strainNtac", adjust.method = "BH", sort.by = "logFC", number = Inf) %>% tibble::rownames_to_column("Protein")
+sig_M12_topTable_strain_maineffect <- M12_topTable_strain_maineffect %>% dplyr::filter(adj.P.Val < 0.05)
+sig_filt_M12_topTable_strain_maineffect <- na.omit(sig_M12_topTable_strain_maineffect)
+cat("Sig. proteins with strain main effect: ", nrow(sig_filt_M12_topTable_strain_maineffect), "\n")
+
+
+total_hits_diet <- sig_filt_M12_topTable_diet_maineffect %>% filter(adj.P.Val < 0.05)
+up_hits_diet <- sig_filt_M12_topTable_diet_maineffect %>%filter(logFC > 0)
+down_hits_diet <- sig_filt_M12_topTable_diet_maineffect %>% filter(logFC < 0)
+
+cat("Sig. proteins with DIET main effect UP: ", nrow(up_hits_diet), "\n")
+cat("Sig. proteins with DIET main effect DOWN: ", nrow(down_hits_diet), "\n")
+
+
+total_hits_strain <- sig_filt_M12_topTable_strain_maineffect %>% filter(adj.P.Val < 0.05)
+up_hits_strain <- sig_filt_M12_topTable_strain_maineffect %>%filter(logFC > 0)
+down_hits_strain <- sig_filt_M12_topTable_strain_maineffect %>% filter(logFC < 0)
+
+nrow(total_hits_strain)
+cat("Sig. proteins with STRAIN main effect UP: ", nrow(up_hits_strain), "\n")
+cat("Sig. proteins with STRAIN main effect DOWN: ", nrow(down_hits_strain), "\n")
+
+
+
+
+# p val histograms
+png(file.path("doc", "M12_diet_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(M12_topTable_diet_maineffect$P.Value, main = "M12: Diet main effect", xlab = "P-value", col = "darkslategray4")
+dev.off()
+
+png(file.path("doc", "M12_strain_maineffect_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(M12_topTable_strain_maineffect$P.Value, main = "M12: Strain main effect", xlab = "P-value", col = "darkslategray4")
+dev.off()
+```
+
