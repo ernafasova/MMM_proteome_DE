@@ -1,0 +1,1198 @@
+---
+title: "male_phos"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+source(here::here("R/functions.R"))
+source(here::here("R/metadata.R"))
+load(here::here("data/metadata_M.rda"))
+load(here::here("data/phos_M_renamed2_shortterm_filt_norm.rda"))
+load(here::here("data/metadata_M_shortterm.rda"))
+```
+
+
+# Load raw data
+```{r}
+raw_phos_M <- readr::read_tsv(here::here("data-raw/MMM_male_phos_collapsed_10082025.txt"))
+raw_phos_M <- raw_phos_M[-1, ]
+rownames(raw_phos_M) <- NULL
+usethis::use_data(raw_phos_M, overwrite = T)
+
+print(colnames(raw_phos_M))
+any(duplicated(raw_phos_M$PG.Genes)) # TRUE
+any(duplicated(raw_phos_M$PTM_collapse_key)) # FALSE
+any(raw_phos_M$PTM_collapse_key == "") # check for empty rows
+```
+
+
+# Modify raw data
+```{r}
+phos_M <- raw_phos_M %>%
+  dplyr::select(PTM_collapse_key, contains("20250")) %>%
+  column_to_rownames(var = "PTM_collapse_key") %>%
+  dplyr::mutate(across(everything(), as.numeric)) %>%
+  dplyr::mutate(across(everything(), ~ replace(., is.nan(.), NA))) %>%
+  dplyr::mutate(across(everything(), log2))
+
+
+colnames(phos_M)
+
+phos_M_renamed <- phos_M %>%
+  rename_with(
+    .cols = matches("_S\\d+_"),
+    .fn   = ~ sub(".*_S0*([0-9]+)_.*", "S\\1", .x, ignore.case = TRUE)
+  )
+
+
+class(phos_M_renamed)
+usethis::use_data(phos_M_renamed, overwrite = T)
+
+setequal(colnames(phos_M_renamed), metadata_M$phos_MS_id) # regardless of order
+all(colnames(phos_M_renamed) == metadata_M$phos_MS_id)  # checks the order
+
+phos_M_renamed2 <- phos_M_renamed
+colnames(phos_M_renamed2) <- metadata_M$sample_id
+
+all(colnames(phos_M_renamed2) == metadata_M$sample_id) # TRUE
+```
+
+# STY
+```{r}
+# 1) Prepare data for the S/T/Y distribution
+aa_counts <- raw_phos_M %>%
+  dplyr::filter(PTM_0_aa %in% c("S", "T", "Y")) %>%
+  dplyr::count(PTM_0_aa, name = "Count") %>%
+  dplyr::rename(Category = PTM_0_aa) %>%
+  dplyr::arrange(desc(Category)) %>%   # Arrange for consistent plotting
+  dplyr::mutate(
+    Percentage = Count / sum(Count) * 100,
+    Label      = paste0(
+      Category, "\n", format(Count, big.mark = ","),
+      "\n(", round(Percentage, 1), "%)"
+    )
+  )
+
+# 2) Calculate totals for subtitle
+protein_count <- n_distinct(raw_phos_M$PG.Genes)
+total_sites   <- sum(aa_counts$Count)
+
+# 3) Create the Pie Chart
+pie_plot_STY <- ggplot(aa_counts, aes(x = "", y = Percentage, fill = Category)) +
+  geom_bar(stat = "identity", width = 1, color = "white", alpha = 0.7) +          # pie slices
+  coord_polar("y", start = 0) +                                      # turn bar into pie
+  geom_text(                                                         # add labels
+    aes(label = Label),
+    position = position_stack(vjust = 0.5),
+    color    = "black",
+    fontface = "bold",
+    size     = 4
+  ) +
+  scale_fill_brewer(palette = "Dark2") +
+  theme_void() +
+  labs(
+    title    = "S/T/Y Male",
+    subtitle = paste(
+      "Total Sites:", format(total_sites, big.mark = ","),
+      "| Total Phosphoproteins:", format(protein_count, big.mark = ",")
+    )
+  ) +
+  theme(
+    plot.title    = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    legend.position = "none"   # legend not needed, labels are inside
+  )
+
+print(pie_plot_STY)
+ggsave(file.path("doc", "pie_plot_STY_male.png"), plot = pie_plot_STY, width = 5, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Number of phosphosites
+```{r}
+sites_per_protein <- raw_phos_M %>% 
+    dplyr::filter(!is.na(PG.Genes)) %>% 
+    dplyr::group_by(PG.Genes) %>% 
+    dplyr::summarise(SiteCount = n_distinct(PTM_collapse_key), .groups = "drop")
+
+site_freq <- sites_per_protein %>% 
+    dplyr::count(SiteCount)
+
+sites_protein_plot <- ggplot(site_freq, aes(x = SiteCount, y = n)) +
+    geom_col(fill = "steelblue", color = "white") +
+    geom_text(aes(label = ifelse(n <3, n, "")), vjust = -0.5, size = 3) +
+    labs(
+        title = "Phosphosites per protein (male)",
+        x = "Number of phosphosites", 
+        y = "Number of proteins"
+    ) +
+    theme_minimal()
+
+print(sites_protein_plot)
+ggsave(file.path("doc", "sites_protein_plot_male.png"), plot = sites_protein_plot, width = 7, height = 3, dpi = 300, bg = "white")
+```
+
+
+# sites per protein
+```{r}
+protein_site_counts <- raw_phos_M %>% 
+    dplyr::filter(!is.na(PG.Genes)) %>% 
+    dplyr::group_by(PG.Genes) %>% 
+    dplyr::summarise(SiteCount = n_distinct(PTM_collapse_key)) %>% 
+    dplyr::arrange(desc(SiteCount))
+
+cat("Top 10 most phosphorylated proteins:\n")
+print(head(protein_site_counts, 10))
+
+
+top_10_proteins <- head(protein_site_counts, 10)
+
+plot_top_10 <- ggplot(top_10_proteins, 
+                      aes(x = reorder(PG.Genes, SiteCount), y = SiteCount)) +
+  geom_col(fill = "#ef8a62", color = "black") +
+  geom_text(aes(label = SiteCount), hjust = -0.2, size = 3) +
+  coord_flip() +  # flip to make it horizontal
+  labs(
+    title = "Top 10 phosphorylated proteins (male)",
+    x = "Proteins",
+    y = "Number of Unique Phosphosites"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 15),
+        axis.text.x  = element_text(size = 12, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+print(plot_top_10)
+ggsave(file.path("doc", "plot_top_10_male.png"), plot = plot_top_10, width = 7, height = 4, dpi = 300, bg = "white")
+```
+# Overlap with global proteome
+```{r}
+# Your setup (assuming 'proteins' and 'phosphoproteins' are already created)
+proteins <- rownames(prot_M)
+phosphoproteins <- unique(raw_phos_M$PG.Genes) # 1. Find the proteins common to both datasets
+common_proteins <- intersect(proteins, phosphoproteins) # 2. Find proteins unique to the global proteome (identified but not found to be phosphorylated)
+unique_to_proteome <- setdiff(proteins, phosphoproteins) # 3. Find proteins unique to the phosphoproteome (identified only in the phospho-enriched fraction)
+unique_to_phosphoproteome <- setdiff(phosphoproteins, proteins) # 4. Print the counts to verify
+
+cat("Total Proteins in Global Proteome:", length(proteins), "\n")
+cat("Total Proteins in Phosphoproteome:", length(phosphoproteins), "\n")
+cat("--------------------------------------------------\n")
+cat("Number of Common Proteins:", length(common_proteins), "\n")
+cat("Number of Proteins Unique to Global Proteome:", length(unique_to_proteome), "\n")
+cat("Number of Proteins Unique to Phosphoproteome:", length(unique_to_phosphoproteome), "\n")
+
+
+######################### euler ################################################
+protein_sets <- list(
+  Global_Proteome = proteins,
+  Phosphoproteome = phosphoproteins
+)
+
+# Calculate the Euler diagram fit
+fit <- euler(protein_sets)
+
+# Plot the diagram with enhanced styling
+# This creates a plot object that you can save
+euler_plot <- plot(
+  fit,
+  fills = list(fill = c("#91bfdb", "#f1a340"), alpha = 0.7), # Custom colors with transparency
+  labels = list(col = "black", fontface = "bold", cex = 1.2), # Labels for set names
+  quantities = list(col = "black", fontface = "bold", cex = 1.2), # Numbers inside the circles
+  main = "Overlap of Identified Proteins" # Main title for the plot
+)
+
+print(euler_plot)
+
+ggsave(file.path("doc", "euler_plot_male.png"), plot = euler_plot, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+# cumulative plot
+```{r}
+prot_M_renamed_nonlog2 <- 2^prot_M_renamed
+
+# 1) Sets of proteins
+proteins        <- rownames(prot_M_renamed)
+phosphoproteins <- unique(raw_phos_M$PG.Genes)
+common_proteins <- intersect(proteins, phosphoproteins)
+
+# 2) Abundance table (linear values → rank → cumulative %)
+abund_df <- prot_M_renamed_nonlog2 %>%
+  mutate(median = matrixStats::rowMedians(as.matrix(.), na.rm = TRUE)) %>%
+  arrange(desc(median)) %>%
+  mutate(
+    rank    = row_number(),
+    protein = rownames(.),
+    prop    = median / sum(median, na.rm = TRUE),
+    cumperc = cumsum(prop) * 100,
+    phospho_status = ifelse(protein %in% common_proteins, "Phosphorylated", "Not Phosphorylated")
+  )
+
+# 3) Quartiles by cumulative % (factor on Y)
+abund_df <- abund_df %>%
+  mutate(
+    quartile = cut(
+      cumperc,
+      breaks = c(0, 25, 50, 75, 100),
+      labels = c("Q1", "Q2", "Q3", "Q4"),
+      include.lowest = TRUE
+    )
+  )
+
+totals_by_quartile <- abund_df %>% dplyr::count(quartile, name = "total")
+
+phospho_by_quartile <- abund_df %>%
+  dplyr::filter(phospho_status == "Phosphorylated") %>%
+  dplyr::count(quartile, name = "phos")
+
+
+counts_df <- full_join(totals_by_quartile, phospho_by_quartile, by = "quartile") %>%
+  mutate(
+    total = replace_na(total, 0L),
+    phos  = replace_na(phos,  0L)
+  )
+
+# 5) Build label dataframe (one label per quartile)
+y_mid <- c(Q1 = 12.5, Q2 = 37.5, Q3 = 62.5, Q4 = 87.5)
+
+label_df <- counts_df %>%
+  mutate(
+    q_chr = as.character(quartile),
+    y     = y_mid[q_chr],
+    label = paste0(q_chr, "\nTotal: ", total, "\nPhos: ", phos)
+  )
+
+# 6) Plot
+n <- nrow(abund_df)
+
+cumulative_phospho <- ggplot(abund_df, aes(rank, cumperc)) +
+  # Quartile bands
+  annotate("rect", xmin = 1, xmax = n, ymin = 0,  ymax = 25,  fill = "blue", alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 25, ymax = 50,  fill = "red",  alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 50, ymax = 75,  fill = "blue", alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 75, ymax = 100, fill = "red",  alpha = 0.1) +
+  # Curve + points
+  geom_line(size = 1, colour = "#1f4e79") +
+  geom_point(aes(color = phospho_status), size = 2, alpha = 0.6) +
+  scale_color_manual(values = c("Phosphorylated" = "#E69F00", "Not Phosphorylated" = "grey50")) +
+  # Quartile labels (no overlap)
+  geom_text(
+    data = label_df,
+    aes(x = n * 0.985, y = y, label = label),
+    inherit.aes = FALSE, hjust = 1, vjust = 0.5, size = 4
+  ) +
+  # Axes, limits, titles
+  scale_y_continuous(limits = c(0, 100), expand = c(0, 0), name = "Cumulative abundance [%]") +
+  scale_x_continuous(expand = c(0, 0), name = "Abundance rank") +
+  coord_cartesian(xlim = c(0, min(n, 9000)), clip = "off") +
+  labs(
+    title    = "Protein Abundance Distribution"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid      = element_blank(),
+    plot.margin     = margin(10, 60, 10, 10),   # extra right margin for labels
+    legend.position = "bottom",
+    plot.title      = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle   = element_text(hjust = 0.5)
+  )
+
+print(cumulative_phospho)
+
+# 7) Save PNG
+ggsave(
+  file.path("doc", "cumulative_phospho_highlight.png"),
+  plot   = cumulative_phospho,
+  width  = 5, height = 6, dpi = 300, bg = "white"
+)
+```
+
+# subgroup
+```{r}
+phos_M_renamed2_shortterm <- phos_M_renamed2[, metadata_M_shortterm$sample_id] # 36 samples
+colnames(phos_M_renamed2_shortterm) <- setNames(
+  metadata_M_shortterm$new_sample_id,
+  metadata_M_shortterm$sample_id
+)[colnames(phos_M_renamed2_shortterm)]
+
+
+# For longterm
+phos_M_renamed2_longterm <- phos_M_renamed2[, metadata_M_longterm$sample_id] # 52 samples
+colnames(phos_M_renamed2_longterm) <- setNames(
+  metadata_M_longterm$new_sample_id,
+  metadata_M_longterm$sample_id
+)[colnames(phos_M_renamed2_longterm)]
+
+all(colnames(phos_M_renamed2_shortterm) == metadata_M_shortterm$new_sample_id)
+all(colnames(phos_M_renamed2_longterm) == metadata_M_longterm$new_sample_id)
+
+usethis::use_data(phos_M_renamed2_shortterm, overwrite = T)
+usethis::use_data(phos_M_renamed2_longterm, overwrite = T)
+```
+
+
+
+# valid values
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(phos_M_renamed2_shortterm))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv1 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Phosphosites per sample, male-12weeks (n=36)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+
+print(vv1)
+ggsave(file.path("doc", "vv1_male_prot_shortterm.png"), plot = vv1, width = 7, height = 3, dpi = 300, bg = "white")
+```
+
+
+
+## Distribution
+```{r}
+# Now, create the plot and save it
+png(filename = "doc/boxplot_phos_M_renamed2_shortterm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(phos_M_renamed2_shortterm, 
+        main = "Male 12weeks (n=36), phospho",
+        ylab = "Log2 Intensity", # Adding a y-axis label is good practice
+        col = "lightblue")      # Adding some color can help
+
+
+dev.off()
+
+##########
+# Convert data to long format
+df_long <- tidyr::pivot_longer(phos_M_renamed2_shortterm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, male_12w (phospho)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot
+ggsave(file.path("doc", "densityplot_M_phos_shortterm.png"), plot = density_plot, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+
+
+# PCA1 - checking outliers
+```{r}
+n_original <- nrow(phos_M_renamed2_shortterm) # 53,539
+df_nona <- na.omit(phos_M_renamed2_shortterm) # 3638
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_M_shortterm$new_sample_id)
+
+
+ 
+pca_day <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = FALSE
+)
+
+
+pca_beatbox <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = FALSE
+)
+
+plotly::ggplotly(pca_beatbox)
+plotly::ggplotly(pca_day)
+
+
+ggsave(file.path("doc", "pca_phospho_day_beforenorm_Mshort.png"), plot = pca_day, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_phopsho_beatbox_beforenorm_Mshort.png"), plot = pca_beatbox, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Filter
+```{r}
+#Filter on total matrix
+phos_M_renamed2_shortterm_filt100 <- PhosR::selectOverallPercent(phos_M_renamed2_shortterm, 1) # 3638
+phos_M_renamed2_shortterm_filt70 <- PhosR::selectOverallPercent(phos_M_renamed2_shortterm, 0.7) # 9272
+phos_M_renamed2_shortterm_filt50 <- PhosR::selectOverallPercent(phos_M_renamed2_shortterm, 0.5) # 13242
+
+phos_M_renamed2_shortterm_filt <- phos_M_renamed2_shortterm_filt50
+usethis::use_data(phos_M_renamed2_shortterm_filt, overwrite = T)
+```
+
+
+# Filter2: groupwise
+```{r}
+min_completeness_per_group <- 0.7
+groups <- paste(metadata_M_shortterm$diet, metadata_M_shortterm$strain, sep = "_")
+unique_groups <- unique(groups)
+
+# Print the groups to verify
+print("Experimental groups identified:")
+print(table(groups))
+
+
+proteins_to_keep <- apply(phos_M_renamed2_shortterm, 1, function(protein_row) {
+  completeness_in_each_group <- sapply(unique_groups, function(group_level) {
+    cols_in_group <- which(groups == group_level)
+    protein_in_group <- protein_row[cols_in_group]
+    completeness <- sum(!is.na(protein_in_group)) / length(protein_in_group)
+    
+    return(completeness)
+  })
+  
+  # The final decision for this protein: keep it if ANY group met the threshold
+  return(any(completeness_in_each_group >= min_completeness_per_group))
+})
+
+
+phos_M_renamed2_shortterm_filt_groupwise70 <- phos_M_renamed2_shortterm[proteins_to_keep, ]
+
+
+
+
+# 2. THE CORE LOGIC: Find proteins that pass the threshold in ALL groups
+proteins_to_keep_strict <- apply(phos_M_renamed2_shortterm, 1, function(protein_row) {
+    
+    # For the current protein, check its completeness in each group
+    completeness_in_each_group <- sapply(unique_groups, function(group_level) {
+        # Get the sample columns that belong to the current group
+        cols_in_group <- which(groups == group_level)
+        
+        # Get the data for this protein just for those samples
+        protein_in_group <- protein_row[cols_in_group]
+        
+        # Calculate the percentage of non-NA values
+        completeness <- sum(!is.na(protein_in_group)) / length(protein_in_group)
+        return(completeness)
+    })
+    
+    # THE KEY CHANGE: Keep it only if ALL groups meet the threshold
+    return(all(completeness_in_each_group >= min_completeness_per_group))
+})
+
+# 3. APPLY THE STRICT FILTER
+phos_M_renamed2_shorttermfilt_strict70 <- phos_M_renamed2_shortterm[proteins_to_keep_strict, ]
+
+# 4. VERIFY AND COMPARE THE RESULT
+cat("Original dimensions:", dim(phos_M_renamed2_shortterm), "\n")
+cat("Dimensions after 'at least one group' filtering:", dim(phos_M_renamed2_shortterm_filt_groupwise70), "\n")
+cat("Dimensions after 'IN EVERY GROUP' filtering (strict):", dim(phos_M_renamed2_shorttermfilt_strict70), "\n")
+
+num_lost <- nrow(phos_M_renamed2_shortterm_filt_groupwise70) - nrow(phos_M_renamed2_shorttermfilt_strict70)
+cat("\nSwitching to the strict filter removed an additional", num_lost, "proteins.\n")
+cat("These are the proteins present in one group but not consistently in the other.\n")
+```
+## VV2
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(phos_M_renamed2_shortterm_filt))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv2 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Phosphosites per sample, male-12weeks (n=36)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+
+print(vv2)
+ggsave(file.path("doc", "vv2_male_prot_shortterm.png"), plot = vv2, width = 7, height = 3, dpi = 300, bg = "white")
+```
+
+# Normalize 
+```{r}
+# from PhosR package
+phos_M_renamed2_shortterm_filt_norm <- medianScaling(phos_M_renamed2_shortterm_filt[1:ncol(phos_M_renamed2_shortterm_filt)], scale = TRUE)
+phos_M_renamed2_shortterm_filt_norm <- as.data.frame(phos_M_renamed2_shortterm_filt_norm)
+
+usethis::use_data(phos_M_renamed2_shortterm_filt_norm, overwrite = T)
+```
+
+
+## Distribution 
+```{r}
+# 1. Draw the boxplot as before
+boxplot(phos_M_renamed2_shortterm_filt_norm, 
+        main = "Male 12weeks (n=36), phospho: median normalized",
+        ylab = "Log2 Intensity", # Adding a y-axis label is good practice
+        col = "lightblue")      # Adding some color can help
+
+
+
+# Now, create the plot and save it
+png(filename = "doc/boxplot_phos_M_renamed2_shortterm_filt_norm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(phos_M_renamed2_shortterm_filt_norm, 
+        main = "Male 12weeks (n=36), phospho: median normalized",
+        ylab = "Log2 Intensity", # Adding a y-axis label is good practice
+        col = "lightblue")      # Adding some color can help
+
+
+dev.off()
+
+
+####
+# Convert data to long format
+df_long <- tidyr::pivot_longer(phos_M_renamed2_shortterm_filt_norm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, male_12w (phospho)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot
+ggsave(file.path("doc", "densityplot_phospho_M_shortterm_norm.png"), plot = density_plot, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+
+# PCA2 
+```{r}
+n_original <- nrow(phos_M_renamed2_shortterm_filt_norm) # 7565
+df_nona <- na.omit(phos_M_renamed2_shortterm_filt_norm) # 6287
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_M_shortterm$new_sample_id)
+
+
+ 
+pca_day_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+
+pca_beatbox_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = FALSE
+)
+
+
+ 
+pca_diet_norm <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+pca_strain_norm <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+#####################
+pca_strain_norm_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, shape = diet, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "phospho, M, 12week (n=36)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_norm_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, shape = diet, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "phospho, M, 12week (n=36)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_norm_pc23)
+print(pca_strain_norm_pc13)
+plotly::ggplotly(pca_beatbox)
+plotly::ggplotly(pca_day)
+
+ggsave(file.path("doc", "pca_day_norm_Mshort_norm.png"), plot = pca_day_norm, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_norm_Mshort_norm.png"), plot = pca_beatbox_norm, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_norm_Mshort_norm.png"), plot = pca_diet_norm, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_norm_Mshort_norm.png"), plot = pca_strain_norm, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain23_norm_Mshort_norm.png"), plot = pca_strain_norm_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain13_norm_Mshort_norm.png"), plot = pca_strain_norm_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+
+# Batchcorr
+```{r}
+setequal(colnames(phos_M_renamed2_shortterm_filt_norm), metadata_M_shortterm$new_sample_id) # TRUE
+all(colnames(phos_M_renamed2_shortterm_filt_norm) == metadata_M_shortterm$new_sample_id)    # TRUE
+
+phos_M_renamed2_shortterm_filt_norm_batchcorr <- limma::removeBatchEffect(
+  phos_M_renamed2_shortterm_filt_norm,
+  batch = metadata_M_shortterm$beatbox_batch
+)
+phos_M_renamed2_shortterm_filt_norm_batchcorr <- as.data.frame(phos_M_renamed2_shortterm_filt_norm_batchcorr)
+usethis::use_data(phos_M_renamed2_shortterm_filt_norm_batchcorr, overwrite = TRUE)
+```
+## PCA3
+```{r}
+n_original <- nrow(phos_M_renamed2_shortterm_filt_norm_batchcorr) # 7565
+df_nona <- na.omit(phos_M_renamed2_shortterm_filt_norm_batchcorr) # 6287
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_M_shortterm$new_sample_id)
+
+
+ 
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+
+pca_beatbox_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "global, M, 12week (n=36)",
+    ellipse = FALSE
+)
+
+
+ 
+pca_diet_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "phospho, M, 12week (n=36)",
+    ellipse = TRUE
+)
+
+#####################
+pca_strain_batchcorr_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, shape = diet, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "phospho, M, 12week (n=36)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_batchcorr_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, shape = diet, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "phospho, M, 12week (n=36)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_batchcorr_pc23)
+print(pca_strain_batchcorr_pc13)
+
+ggsave(file.path("doc", "pca_day_Mshort_norm_batchcorr.png"), plot = pca_day_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_batchcorr_Mshort_normbatchcorr.png"), plot = pca_beatbox_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_Mshort_norm_batchcorr.png"), plot = pca_diet_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_Mshort_norm_batchcorr.png"), plot = pca_strain_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain23_Mshort_norm_batchcorr.png"), plot = pca_strain_batchcorr_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain13_Mshort_norm_batchcorr.png"), plot = pca_strain_batchcorr_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Limma: batchcorr data
+```{r}
+metadata_M_shortterm <- metadata_M_shortterm %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac"))
+  )
+
+levels(metadata_M_shortterm$diet)
+levels(metadata_M_shortterm$strain)
+
+table(metadata_M_shortterm$diet)   # LFD-12, FFMD-24
+table(metadata_M_shortterm$strain) # J-18, Ntac-18
+
+
+
+# create design matrix
+design_matrix_batchcorr <- model.matrix(~ diet + strain, data = metadata_M_shortterm)
+
+colnames(design_matrix_batchcorr)
+fit_batchcorr  <- limma::lmFit(phos_M_renamed2_shortterm_filt_norm_batchcorr, design_matrix_batchcorr)
+fit2_batchcorr <- limma::eBayes(fit_batchcorr)
+
+# use get_limma_results function
+limma_results_M_shortterm_diet_batchcorr   <- get_limma_results(fit2_batchcorr, "dietFFMD",   "M12: Diet") # Total: 58 - UP: 32 | DOWN: 26
+limma_results_M_shortterm_strain_batchcorr <- get_limma_results(fit2_batchcorr, "strainNtac", "M12: Strain") # Total 11 - UP: 6 | DOWN: 5
+
+# Diet histogram
+hist(limma_results_M_shortterm_diet_batchcorr$top_table$P.Value,   main = "M12: Diet main effect (batchcorr)",   xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_M_shortterm_strain_batchcorr$top_table$P.Value, main = "M12: Strain main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "M12_main_diet_hist_batchcorr.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M_shortterm_diet_batchcorr$top_table$P.Value, main = "M12: Diet main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "M12_main_strain_hist_batchcorr.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M_shortterm_strain_batchcorr$top_table$P.Value, main = "M12: Strain main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+```
+
+# Limma: non-batchcorr data
+Add batch variable directly in the design matrix. 
+```{r}
+metadata_M_shortterm <- metadata_M_shortterm %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac"))
+  )
+
+levels(metadata_M_shortterm$diet)
+levels(metadata_M_shortterm$strain)
+
+table(metadata_M_shortterm$diet)   # LFD-12, FFMD-24
+table(metadata_M_shortterm$strain) # J-18, Ntac-18
+# create design matrix
+design_matrix <- model.matrix(~ diet + strain + beatbox_batch, data = metadata_M_shortterm)
+
+colnames(design_matrix)
+fit  <- limma::lmFit(phos_M_renamed2_shortterm_filt_norm, design_matrix)
+fit2 <- limma::eBayes(fit)
+
+# use get_limma_results function
+limma_results_M_shortterm_diet   <- get_limma_results(fit2, "dietFFMD",   "M12: Diet") # Total: 1105 - UP: 655 | DOWN: 450
+limma_results_M_shortterm_strain <- get_limma_results(fit2, "strainNtac", "M12: Strain") # Total 15 - UP: 7 | DOWN: 8
+
+# Diet histogram
+hist(limma_results_M_shortterm_diet$top_table$P.Value,   main = "M12: Diet main effect",   xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_M_shortterm_strain$top_table$P.Value, main = "M12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "M12_main_diet_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M_shortterm_diet$top_table$P.Value, main = "M12: Diet main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "M12_main_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_M_shortterm_strain$top_table$P.Value, main = "M12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+
+# For the Diet contrast
+write.csv(limma_results_M_shortterm_diet$top_table,file = "doc/results_diet_M12_phospho.csv",row.names = TRUE)
+
+# For the Strain contrast
+write.csv(limma_results_M_shortterm_strain$top_table,file = "doc/results_strain_M12_phospho.csv",row.names = TRUE)
+
+hits_M_phos_diet <- limma_results_M_shortterm_diet$sig
+hits_M_phos_strain <- limma_results_M_shortterm_strain$sig
+```
+
+# check two methods
+```{r}
+# --- Step 1: Find a protein that is highly variable (no changes here) ---
+row_variances <- apply(phos_M_renamed2_shortterm_filt_norm, 1, var, na.rm = TRUE)
+protein_to_plot <- names(which.max(row_variances))
+
+# --- Step 2: Prepare data for plotting (no changes here) ---
+plot_df <- tibble(
+    new_sample_id = colnames(phos_M_renamed2_shortterm_filt_norm),
+    before_corr = as.numeric(phos_M_renamed2_shortterm_filt_norm[protein_to_plot, ]),
+    after_corr = as.numeric(phos_M_renamed2_shortterm_filt_norm_batchcorr[protein_to_plot, ])
+  ) %>%
+  # Join with metadata to get batch and diet information
+  left_join(metadata_M_shortterm, by = "new_sample_id") %>%
+  # Pivot to a long format suitable for ggplot
+  pivot_longer(
+    cols = c("before_corr", "after_corr"),
+    names_to = "correction_status",
+    values_to = "expression"
+  )
+
+# --- Step 3: Create the boxplots WITH a visible legend ---
+
+# Plot for "Before Correction"
+plot_box_before <- ggplot(plot_df %>% filter(correction_status == "before_corr"), 
+                          aes(x = beatbox_batch, y = expression, fill = beatbox_batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  ggtitle(paste("Before Correction:", protein_to_plot)) +
+  theme_bw() +
+  labs(x = "Beatbox Batch", y = "Normalized Expression", fill = "Beatbox Batch") + # <- Added legend title
+  theme(legend.position = "none")
+
+# Plot for "After Correction"
+plot_box_after <- ggplot(plot_df %>% filter(correction_status == "after_corr"), 
+                         aes(x = beatbox_batch, y = expression, fill = beatbox_batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  ggtitle(paste("After Correction:", protein_to_plot)) +
+  theme_bw() +
+  labs(x = "Beatbox Batch", y = "Normalized Expression", fill = "Beatbox Batch")+
+  theme(legend.position = "none")
+
+# --- Step 4: Show plots side-by-side ---
+print(plot_box_before | plot_box_after)
+
+```
+
+# overlap with sig hits in proteome
+```{r}
+is.data.frame(hits_M_phos_diet)
+nrow(hits_M_phos_diet)
+
+names(hits_M_phos_diet)
+"Protein" %in% names(hits_M_phos_diet)
+
+str(hits_M_phos_diet$Protein)
+length(hits_M_phos_diet$Protein)
+
+hits_M_phos_diet$Protein_base <- sub("_.*$", "", hits_M_phos_diet$Protein)
+
+# quick sanity check
+head(hits_M_phos_diet[, c("Protein", "Protein_base")])
+any(grepl("_", hits_M_phos_diet$Protein_base))  # should be FALSE
+
+
+
+# Step 2: Get the lists of unique protein names
+prot_proteins <- unique(hits_M_prot_diet$Protein)
+phos_proteins <- unique(hits_M_phos_diet$Protein_base)
+
+# Step 3: Find the intersection (proteins significant in BOTH datasets)
+overlapping_proteins <- intersect(prot_proteins, phos_proteins)
+
+message("Total significant proteins in Proteome: ", length(prot_proteins))
+message("Total significant proteins in Phosphoproteome: ", length(phos_proteins))
+message("Proteins significant in BOTH: ", length(overlapping_proteins))
+
+protein_sets <- list(
+  prot_proteins = prot_proteins,
+  phos_proteins = phos_proteins
+)
+
+# Calculate the Euler diagram fit
+fit <- euler(protein_sets)
+
+# Plot the diagram with enhanced styling
+# This creates a plot object that you can save
+euler_plot <- plot(
+  fit,
+  fills = list(fill = c("#91bfdb", "#f1a340"), alpha = 0.7), # Custom colors with transparency
+  labels = list(col = "black", fontface = "bold", cex = 1.2), # Labels for set names
+  quantities = list(col = "black", fontface = "bold", cex = 1.2), # Numbers inside the circles
+  main = "Overlap of Identified Proteins" # Main title for the plot
+)
+
+print(euler_plot)
+```
+
+
+
+# MA plot (Mean-difference plot)
+```{r}
+# Generate the MA plot for the 'dietFFMD' comparison
+# fit2 is your eBayes-moderated fit object
+plotMD(fit2, coef = "dietFFMD", status = decideTests(fit2), main = "M12: Diet (FFMD vs LFD)")
+
+# Add a horizontal line at y=0 for reference
+abline(h = 0, col = "grey")
+```
+```{r}
+# 1. Extract the main results data frame from your limma results list
+# This is the data frame your function expects as its 'df' input.
+volcano_data_diet <- limma_results_M_shortterm_diet$top_table
+
+# 2. Call your custom function with this data frame
+# The rownames are already converted to a column named "Protein" by your get_limma_results function, 
+# but your volcano function renames it to "Site", which is fine.
+p_diet <- create_volcano_plot(
+  df = volcano_data_diet,
+  title = "M12: Diet (FFMD vs LFD)",
+  top_n = 15 # Let's label the top 15 up/down proteins
+)
+
+# 3. Display the plot
+print(p_diet)
+
+# You can do the same for your strain results
+volcano_data_strain <- limma_results_M_shortterm_strain$top_table
+p_strain <- create_volcano_plot(
+  df = volcano_data_strain,
+  title = "M12: Strain (Ntac vs J)",
+  top_n = 15
+)
+print(p_strain)
+
+
+```
+# heatmap
+```{r}
+# First, get the list of top protein names
+top_proteins_diet <- topTable(fit2, coef = "dietFFMD", number = 50) # Get top 50 proteins
+
+# Extract the batch-corrected expression data for these top proteins
+top_protein_data <- phos_M_renamed2_shortterm_filt_norm[rownames(top_proteins_diet), ]
+
+
+
+# Create an annotation data frame for the columns
+annotation_col <- data.frame(
+  Diet = metadata_M_shortterm$diet,
+  Strain = metadata_M_shortterm$strain
+)
+rownames(annotation_col) <- colnames(top_protein_data)
+
+pheatmap(top_protein_data,
+         main = "Top 50 DE Proteins for Diet",
+         annotation_col = annotation_col,
+         scale = "row", # Scale expression values per protein
+         show_rownames = FALSE, # Can be TRUE if you have few proteins
+         show_colnames = FALSE)
+```
+```{r}
+limma_toptable_diet <- limma_results_M_shortterm_diet$top_table %>% 
+    column_to_rownames("Protein")
+
+# 1. Select your top significant protein from the diet results
+top_protein_name <- rownames(limma_toptable_diet)[1]
+top_protein_fdr <- format(limma_toptable_diet[top_protein_name, "adj.P.Val"], scientific = TRUE, digits = 3)
+
+# 2. Create a data frame for this single protein
+plot_df <- data.frame(
+  Expression = as.numeric(phos_M_renamed2_shortterm_filt_norm[top_protein_name, ]),
+  Diet = metadata_M_shortterm$diet,
+  Strain = metadata_M_shortterm$strain,
+  Batch = metadata_M_shortterm$beatbox_batch
+)
+
+# 3. Create the boxplot
+ggplot(plot_df, aes(x = Diet, y = Expression, fill = Diet)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  facet_wrap(~Strain) + # See if the effect is consistent across strains
+  theme_bw(base_size = 14) +
+  labs(
+    title = paste("Expression of Protein:", top_protein_name),
+    subtitle = paste("FDR (adjusted p-value) =", top_protein_fdr),
+    y = "Normalized Abundance (log2 scale)",
+    x = "Diet"
+  ) +
+  scale_fill_manual(values = c("LFD" = "blue", "FFMD" = "red"))
+
+```

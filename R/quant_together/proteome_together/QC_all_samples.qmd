@@ -1,0 +1,1927 @@
+---
+title: "QC"
+author: "DE"
+format: html
+---
+
+
+# Load dependencies 
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+source(here::here("R/metadata.R"))
+```
+
+
+# Load raw data
+```{r load raw data}
+raw_prot <- readr::read_tsv(here::here("data-raw/MMM_proteome_20241111_110449_20240924_Report.tsv")) # 8115 rows
+#colnames(raw_prot)
+any(duplicated(raw_prot$PG.ProteinGroups)) # FALSE
+any(duplicated(raw_prot$PG.Genes)) # TRUE
+
+usethis::use_data(raw_prot, overwrite = T)
+```
+
+# Modify raw data
+```{r modify raw data}
+duplicate_genes <- raw_prot %>% 
+    dplyr::count(PG.Genes) %>% 
+    filter(n > 1)
+
+raw_prot_duplicates <- raw_prot %>%
+  dplyr::filter(
+      PG.Genes %in% duplicate_genes$PG.Genes,
+      !is.na(PG.Genes)) # remove NA
+
+dim(raw_prot_duplicates)
+
+raw_prot_duplicates <- raw_prot_duplicates %>%
+  dplyr::mutate(missing_count = rowSums(is.na(.)))
+
+raw_prot_duplicates$genes <- raw_prot_duplicates$PG.Genes
+raw_prot_duplicates$proteins <- raw_prot_duplicates$PG.ProteinGroups
+
+
+
+# fix duplicated genes
+raw_prot_fixed <- raw_prot %>%
+  mutate(
+    # The condition checks for all three problems at once
+    PG.Genes = if_else(
+      is.na(PG.Genes) | PG.Genes == "" | duplicated(PG.Genes) | duplicated(PG.Genes, fromLast = TRUE),
+      
+      # If TRUE (the gene name is problematic), use the value from Protein_ID
+      true = PG.ProteinGroups,
+      
+      # If FALSE (the gene name is fine), keep the original Gene name
+      false = PG.Genes
+    )
+  )
+
+any(duplicated(raw_prot_fixed$PG.Genes)) # False
+any(is.na(raw_prot_fixed$PG.Genes)) # check for NA
+any(is.nan(raw_prot_fixed$PG.Genes)) # check for NaN
+any(raw_prot_fixed$PG.Genes == "") # check for empty rows
+
+#problem_rows <- raw_prot_fixed %>% filter(is.na(PG.Genes) | PG.Genes == "" | is.nan(PG.Genes))
+
+
+# create clean only quantitative proteomic matrix
+df_prot <- raw_prot_fixed %>%
+  dplyr::select(PG.Genes, contains("20240924_TIMS6_EVO4")) %>%
+  column_to_rownames(var = "PG.Genes") %>%
+  dplyr::mutate(across(everything(), as.numeric)) %>%
+  dplyr::mutate(across(everything(), ~ replace(., is.nan(.), NA))) %>%
+  dplyr::mutate_all(log2)
+
+dim(df_prot) # 8115 rows, 229 samples
+#colnames(df_prot)
+
+
+
+
+################### colnames
+class(df_prot) # df
+#colnames(df_prot) <- paste0("s", 1:229) # optional, easier
+
+df_prot <- df_prot %>%
+  rename_with(~ sub(".*_(S[0-9]+)_.*", "\\1", .)) %>% 
+  rename_with(~ gsub("^S", "s", .))
+#colnames(df_prot)
+
+
+usethis::use_data(df_prot, overwrite = T)
+#################
+setequal(colnames(df_prot), metadata$sample_id) #  TRUE
+all(colnames(df_prot) == metadata$sample_id) # FALSE
+```
+
+# Align with metadata
+```{r}
+print(metadata$sample_id)
+print(colnames(df_prot))
+
+# Compare metadata sample IDs with data column names
+comparison <- data.frame(
+  Metadata = metadata$sample_id,
+  Data     = colnames(df_prot)
+)
+
+# Find mismatches
+setdiff(metadata$sample_id, colnames(df_prot)) # In metadata, not in data
+setdiff(colnames(df_prot), metadata$sample_id) # In data, not in metadata
+
+# Re-order metadata to match df_prot column order
+metadata <- metadata[match(colnames(df_prot), metadata$sample_id), ]
+
+# Check alignment
+all(metadata$sample_id == colnames(df_prot)) # Should be TRUE
+
+# Final comparison table
+comparison <- data.frame(
+  Metadata = metadata$sample_id,
+  Data     = colnames(df_prot)
+)
+print(comparison) # Should be perfectly aligned row-by-row
+
+# Save for reuse
+usethis::use_data(metadata, overwrite = TRUE)
+```
+
+
+# Dynamic range nonlog2
+```{r dynamic range}
+class(df_prot) # data frame 
+df_prot_nonlog2_values <- 2^df_prot
+
+# create abundance data
+abundance_data <- df_prot_nonlog2_values %>%
+  mutate(median = matrixStats::rowMedians(as.matrix(.), na.rm = TRUE)) %>% # ignores NA
+  arrange(desc(median)) %>% # from most to least
+  mutate(rank = row_number(),
+         proteins = rownames(.))
+
+
+
+# define highlight sets
+N <- 10
+top_proteins <- abundance_data$proteins[1:N]
+bottom_proteins <- abundance_data$proteins[(nrow(abundance_data)-N+1):nrow(abundance_data)]
+custom_proteins <- c("Akt1", "Akt2", "Akt1s1", "Gsk3a", "Gsk3b", "Irs1", "Irs2", "Insr") 
+
+# create a catergory column in abundance data with highlight sets
+abundance_data <- abundance_data %>%
+  mutate(
+    Category = case_when(
+      proteins %in% custom_proteins  ~ "Custom highlight",
+      proteins %in% top_proteins     ~ "Most abundant",
+      proteins %in% bottom_proteins  ~ "Least abundant",
+      TRUE                           ~ "Other"
+    )
+  )
+
+# subset highlighted rows
+highlighted <- abundance_data %>%
+  filter(Category != "Other")
+
+# set seed for reproducible label placement
+set.seed(137)
+
+abundance_plot_global_nonlog2 <- ggplot(abundance_data, aes(x = rank, y = log10(median))) +
+  geom_point(aes(color = Category),size = 1,alpha = 0.7,show.legend = FALSE) +
+    # layer 2 for the highlights
+  geom_point(data = highlighted,aes(x = rank, y = log10(median), color = Category),size = 3) +
+    # layer 3 for labels
+  geom_label_repel(
+    data = highlighted, aes(x = rank, y =log10(median), label = proteins, fill = Category),
+    color = "black", # color is set outside of aes
+    size = 5,
+    max.overlaps = 25, # if too many would overlap, it drops extras (prints a message).
+    nudge_y = 0.1, # lifts labels a bit.
+    box.padding = 0.5, # adds space around labels.
+    show.legend = FALSE
+  ) +
+    # color scale for the dots (points)
+  scale_color_manual(values = c("Most abundant" = "#E69F00","Least abundant" = "#56B4E9", "Custom highlight" = "#D55E00", "Other" = "gray60")) +
+    # color scale for the labels
+  scale_fill_manual(values = c("Most abundant"    = "#FFE5B4","Least abundant"   = "#CFE2F3","Custom highlight" = "#F7CAC9")) +
+  labs(
+      title = "Protein Abundance (global)", 
+      x = "Protein abundance rank", 
+      y = "Median intensity [log10]") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none"
+  )
+
+print(abundance_plot_global_nonlog2)
+
+ggsave(file.path("doc", "abundance_plot_global_nonlog2.png"), plot = abundance_plot_global_nonlog2, width = 7, height = 6, dpi = 300,bg = "white")
+```
+
+
+
+
+
+
+```{r}
+library(dplyr)
+library(ggplot2)
+
+df_prot_nonlog2_values <- 2^df_prot
+
+# 1) Prepare data: median abundance, rank, cumulative %
+abund_df <- df_prot_nonlog2_values %>%
+  mutate(median = matrixStats::rowMedians(as.matrix(.), na.rm = TRUE)) %>%
+  arrange(desc(median)) %>%
+  mutate(
+    rank     = row_number(),
+    protein  = rownames(.),
+    prop     = median / sum(median, na.rm = TRUE),
+    cumperc  = cumsum(prop) * 100
+  )
+
+n   <- nrow(abund_df)
+q1  <- ceiling(0.25 * n)
+q2  <- ceiling(0.50 * n)
+q3  <- ceiling(0.75 * n)
+top <- min(10, n)
+y_top <- abund_df$cumperc[top]
+
+top10_lab <- paste0("Top 10:\n", paste(abund_df$protein[1:top], collapse = "\n"))
+
+# 2) Plot
+ggplot(abund_df, aes(x = rank, y = cumperc)) +
+  # quartile bands (Q1..Q4)
+  annotate("rect", xmin = 1,   xmax = q1, ymin = 0, ymax = 100, alpha = 0.10) +
+  annotate("rect", xmin = q1,  xmax = q2, ymin = 0, ymax = 100, alpha = 0.05) +
+  annotate("rect", xmin = q2,  xmax = q3, ymin = 0, ymax = 100, alpha = 0.10) +
+  annotate("rect", xmin = q3,  xmax = n,  ymin = 0, ymax = 100, alpha = 0.05) +
+  # red “Top 10” block
+  annotate("rect", xmin = 1, xmax = top, ymin = 0, ymax = y_top, fill = "red", alpha = 0.4) +
+  # cumulative curve
+  geom_line(size = 1) +
+  # Top-10 label box
+  annotate("label",
+           x = q2 + (n - q2) * 0.25, y = 50,
+           label = top10_lab, hjust = 0, vjust = 0.5, size = 3.2, label.size = 0.3) +
+  # guides & theme
+  scale_y_continuous(limits = c(0, 100), expand = c(0, 0), name = "Cumulative abundance [%]") +
+  scale_x_continuous(expand = c(0, 0), name = "Abundance rank") +
+  coord_cartesian(clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(
+    panel.grid.minor = element_blank(),
+    plot.margin = margin(10, 30, 10, 10)
+  )
+
+
+```
+
+```{r}
+library(dplyr)
+library(ggplot2)
+library(matrixStats)
+
+# Back-transform if df_prot is log2
+df_prot_nonlog2_values <- 2 ^ df_prot
+
+# Prepare data on *linear* values
+abund_df <- df_prot_nonlog2_values %>%
+  mutate(median = matrixStats::rowMedians(as.matrix(.), na.rm = TRUE)) %>%
+  arrange(desc(median)) %>%
+  mutate(
+    rank    = row_number(),
+    protein = rownames(.),
+    prop    = median / sum(median, na.rm = TRUE),
+    cumperc = cumsum(prop) * 100
+  )
+
+n   <- nrow(abund_df)
+top <- min(10, n)
+y_top <- abund_df$cumperc[top]
+top10_lab <- paste0("Top 10:\n", paste(abund_df$protein[1:top], collapse = "\n"))
+
+# --- Quartiles on the Y axis ---
+# ranks at which cumulative % first reaches 25, 50, 75
+r25 <- which(abund_df$cumperc >= 25)[1]
+r50 <- which(abund_df$cumperc >= 50)[1]
+r75 <- which(abund_df$cumperc >= 75)[1]
+
+# counts per quartile
+q_counts <- c(
+  Q1 = r25,
+  Q2 = r50 - r25,
+  Q3 = r75 - r50,
+  Q4 = n - r75
+)
+
+# positions for labels
+y_mid   <- c(12.5, 37.5, 62.5, 87.5)
+x_right <- n * 0.97
+
+# Plot
+abund_df <- abund_df %>%
+  mutate(top10_flag = ifelse(rank <= 10, "Top10", "Other"))
+
+cumulative <- ggplot(abund_df, aes(x = rank, y = cumperc)) +
+  # quartile bands (background)
+  annotate("rect", xmin = 1, xmax = n, ymin = 0,  ymax = 25, fill = "blue", alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 25, ymax = 50, fill = "red", alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 50, ymax = 75, fill = "blue", alpha = 0.1) +
+  annotate("rect", xmin = 1, xmax = n, ymin = 75, ymax = 100, fill = "red", alpha = 0.1) +
+  
+  # cumulative curve
+  geom_line(size = 1, colour = "#1f4e79") +
+  
+  # highlight points: red for Top10, black for the rest
+  geom_point(aes(color = top10_flag), size = 2) +
+  scale_color_manual(values = c("Top10" = "red", "Other" = "black")) +
+  
+  # quartile count labels
+  annotate("text", x = n*0.97, y = 12.5, label = paste0("Q1 ", q_counts[1]), hjust = 1) +
+  annotate("text", x = n*0.97, y = 37.5, label = paste0("Q2 ", q_counts[2]), hjust = 1) +
+  annotate("text", x = n*0.97, y = 62.5, label = paste0("Q3 ", q_counts[3]), hjust = 1) +
+  annotate("text", x = n*0.97, y = 87.5, label = paste0("Q4 ", q_counts[4]), hjust = 1) +
+  
+  # axes & theme
+  scale_y_continuous(limits = c(0, 100), expand = c(0, 0),
+                     name = "Cumulative abundance [%]") +
+  scale_x_continuous(expand = c(0, 0), name = "Abundance rank") +
+  coord_cartesian(xlim = c(0, min(n, 9000)), clip = "off") +
+  theme_minimal(base_size = 12) +
+  theme(panel.grid = element_blank(),
+        plot.margin = margin(10, 30, 10, 10),
+        legend.position = "none")
+
+# If you also want the counts printed in the console:
+data.frame(
+  Quartile = c("Q1 (0–25%)", "Q2 (25–50%)", "Q3 (50–75%)", "Q4 (75–100%)"),
+  Proteins = as.integer(q_counts)
+)
+
+ggsave(file.path("doc", "cumulative.png"), plot = cumulative, width = 3, height = 4, dpi = 300,bg = "white")
+```
+
+
+# Missing values
+```{r missing values}
+dim(df_prot)
+sum(is.na(df_prot)) # 129040
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(df_prot)) * 1
+
+annotation_col <- metadata_new %>%
+  dplyr::select(sample_id, diet, sex, strain) %>%
+  tibble::column_to_rownames(var = "sample_id")
+
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,              # Show the sample IDs
+  color = c("gray95", "black"),        # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),           # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Pattern of Missing Values Across Samples" # Add a title
+)
+
+ggsave(file.path("doc", "na_heatmap.png"), plot = na_heatmap, width = 7, height = 6, dpi = 300,bg = "white")
+```
+
+
+# Missing proteins
+```{r missing proteins}
+data_long <- df_prot %>%
+  rownames_to_column(var = "PG.Genes") %>%
+  pivot_longer(
+    cols = -PG.Genes,          # Pivot all columns except for the gene names
+    names_to = "sample_id",    # The new column for sample names
+    values_to = "log2_abundance" # The new column for abundance values
+  )
+
+
+protein_missing_summary <- data_long %>%
+  group_by(PG.Genes) %>%
+  summarize(
+    n_total_samples = n(),  # Total number of samples (should be 229 for all)
+    n_missing = sum(is.na(log2_abundance)), # Count how many NAs there are for this protein
+    n_present = sum(!is.na(log2_abundance)) # Count how many have a value
+  ) %>%
+  mutate(
+    percent_missing = (n_missing / n_total_samples) * 100,
+    percent_present = (n_present / n_total_samples) * 100
+  ) %>%
+  arrange(desc(percent_missing))
+
+
+################################################################################
+status_matrix <- df_prot %>%
+  rownames_to_column(var = "PG.Genes") %>%
+  mutate(across(
+    .cols = -PG.Genes, # Apply this to all columns except the gene names column
+    .fns = ~ if_else(is.na(.), "Missing", "Present") # If value is NA -> "Missing", otherwise -> "Present"
+  ))
+
+# Example: I want to check the status of a specific protein, "APOE"
+status_matrix %>%
+  filter(PG.Genes == "Lime1")
+
+# Example: I want to see all proteins for a specific sample, "s5"
+status_matrix %>%
+  dplyr::select(PG.Genes, s5)
+
+######################################
+ggplot(protein_missing_summary, aes(x = percent_missing)) +
+geom_histogram(binwidth = 2, fill = "#56B4E9", color = "white", alpha = 0.85) +
+labs(title = "Distribution of Missingness Across Proteins",
+x = "Percent Missing (per protein)",
+y = "Protein Count") +
+theme_minimal(base_size = 14)
+
+top_missing <- protein_missing_summary %>% 
+  slice_max(order_by = percent_missing, n = 10)
+
+sample_missing_summary <- data_long %>%
+  group_by(sample_id) %>%
+  summarize(n_total_proteins = n(),
+            n_missing = sum(is.na(log2_abundance)),
+            percent_missing = 100 * n_missing / n_total_proteins) %>%
+  arrange(desc(percent_missing))
+
+###################
+# Count proteins with 0% missingness
+n_zero_missing <- sum(protein_missing_summary$percent_missing == 0, na.rm = TRUE)
+
+missigness_plot <- ggplot(protein_missing_summary, aes(x = percent_missing)) +
+  geom_histogram(
+    binwidth = 2,
+    fill = viridis(1, option = "D"),
+    color = "grey90",
+    alpha = 0.95,
+    boundary = 0
+  ) +
+  labs(
+    title = "Distribution of Missingness Across Proteins (n=229)",
+    x = "Percentage of Missing Values per Protein",
+    y = "Number of Proteins"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 6)),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title.x = element_text(face = "bold", size = 13),
+    axis.title.y = element_text(face = "bold", size = 13),
+    legend.position = "none"
+  ) +
+  annotate(
+    "text",
+    x = 50,  # horizontal position (adjust if needed)
+    y = max(table(cut(protein_missing_summary$percent_missing, breaks = seq(0, 100, by = 2)))) + 2,
+    label = paste("Proteins with 0% missingness:", n_zero_missing),
+    hjust = 0.5,
+    size = 5,
+    fontface = "bold"
+  )
+
+print(missigness_plot)
+
+ggsave(file.path("doc", "missigness_plot.png"), plot = missigness_plot, width = 6, height = 5, dpi = 300,bg = "white")
+```
+
+
+# Valid values
+```{r valid values}
+valid_value_counts <- colSums(!is.na(df_prot))
+count_data <- data.frame(column = names(valid_value_counts), count = valid_value_counts)
+
+mean_value <- mean(count_data$count)
+
+vv1 <- ggplot(count_data, aes(x = seq_along(column), y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1) +
+  geom_text(aes(x = length(column) * 0.8, y = mean_value, label = paste0("Mean = ", round(mean_value, 0))),
+            vjust = -0.5, color = "red", size = 4) +
+  labs(title = "Valid Values per sample (n=229)",
+       x = "Samples (s1-s229)",
+       y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+ggsave(file.path("doc", "vv1.png"), plot = vv1, width = 7, height = 4, dpi = 300,bg = "white")
+```
+
+
+# Boxplot intensities
+```{r boxplot intensities}
+# quick view
+boxplot(
+  df_prot, las = 2,              # vertical sample names
+  outline = FALSE,               # hides outlier points
+  col = "gray82",                # light box color
+  main = "Global (n=229)",
+  ylab = "Log2 Intensity",
+  xlab = "Samples",
+  cex.axis = 0.8                 # smaller axis labels for clarity
+)
+
+
+# Reshape the data from wide to long
+prot_long <- df_prot %>%
+  tibble::rownames_to_column("PG.Genes") %>%
+  pivot_longer(
+    cols = -PG.Genes, # Select all columns except the 'Protein' column
+    names_to = "sample_id",
+    values_to = "intensity"
+  )
+
+prot_long_meta <- left_join(prot_long, metadata_new, by = "sample_id")
+
+
+prot_long_meta <- prot_long_meta %>%
+  mutate(
+    beatbox_batch = factor(beatbox_batch, levels = paste0("g", 1:12)),
+    sample_id = factor(sample_id, levels = paste0("s", 1:229))
+  )
+
+intensity_boxplot <- ggplot(prot_long_meta, aes(x = sample_id, y = intensity, fill = beatbox_batch)) +
+  geom_boxplot(na.rm = TRUE) +
+  labs(
+    title = "Global (n=229)",
+    x = "Sample ID",
+    y = "Log2(Intensity)",
+    fill = "Batch"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+
+print(intensity_boxplot)
+
+ggsave(file.path("doc", "intensity_boxplot.png"), plot = intensity_boxplot, width = 25, height = 6, dpi = 300,bg = "white")
+```
+
+
+
+# Density plot
+```{r density plot}
+# Convert data to long format
+df_long <- tidyr::pivot_longer(df_prot, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot_global <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, global", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "none")
+
+density_plot_global
+plotly::ggplotly(density_plot_global)
+
+ggsave(file.path("doc", "density_plot_global.png"), plot = density_plot_global, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+# PCA outlier
+```{r pca outlier}
+dim(df_prot) # 8115
+df_nona <- na.omit(df_prot) # 6075
+colSums(is.na(df_nona)) # double check
+n_original <- nrow(df_prot)
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = T)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC): standard deviations squared.
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+# Step 3: Merge PCA results with metadata
+pca_data <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    # Create the custom hover text column for our interactive plot
+  mutate(
+    weeks = as.factor(weeks),
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Sex: ", sex,
+      "<br>Strain: ", strain,
+      "<br>Weeks: ", weeks
+    )
+  )
+# inner_join keeps only samples present in both pca_results and metadata.
+
+my_colors <- c(
+  "LFD" = "#21908CFF",
+  "FFMD" = "#D55E00"
+)
+
+
+pca_outlier <- ggplot(pca_data, aes(x = PC1, y = PC2, color = diet, shape = weeks, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = my_colors) +
+  labs(
+    title = "PCA of all samples (n=229)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_outlier)
+plotly::ggplotly(pca_outlier)
+
+ggsave(file.path("doc", "pca_outlier.png"), plot = pca_outlier, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Outlier removal
+```{r outlier removal}
+prot_removeoutlier <- df_prot %>% 
+    dplyr::select(-s171) # 228 samples left
+
+colnames(prot_removeoutlier)
+usethis::use_data(prot_removeoutlier, overwrite = T)
+```
+
+# Filter
+```{r filter}
+prot_removeoutlier_filt100 <- PhosR::selectOverallPercent(prot_removeoutlier, 1) # 6081
+prot_removeoutlier_filt70 <- PhosR::selectOverallPercent(prot_removeoutlier, 0.7) # 7629
+prot_removeoutlier_filt50 <- PhosR::selectOverallPercent(prot_removeoutlier, 0.5) # 7403
+
+usethis::use_data(prot_removeoutlier_filt100, overwrite = T)
+usethis::use_data(prot_removeoutlier_filt70, overwrite = T)
+usethis::use_data(prot_removeoutlier_filt50, overwrite = T)
+```
+
+
+
+# Valid values2 - after filtering
+```{r valid values2}
+valid_value_counts <- colSums(!is.na(prot_removeoutlier_filt50))
+count_data <- data.frame(column = names(valid_value_counts), count = valid_value_counts)
+
+mean_value <- mean(count_data$count)
+
+vv2 <- ggplot(count_data, aes(x = seq_along(column), y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1) +
+  geom_text(aes(x = length(column) * 0.8, y = mean_value, label = paste0("Mean = ", round(mean_value, 0))),
+            vjust = -0.5, color = "red", size = 4) +
+  labs(title = "Valid Values per sample (n=228)",
+       x = "Samples (s1-s229)",
+       y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+print(vv2)
+ggsave(file.path("doc", "vv2.png"), plot = vv2, width = 7, height = 4, dpi = 300,bg = "white")
+```
+
+# Normalization - median
+```{r normalization - median scale}
+# from PhosR package
+prot_removeoutlier_filt50_median <- medianScaling(prot_removeoutlier_filt50[1:ncol(prot_removeoutlier_filt50)], scale = TRUE)
+prot_removeoutlier_filt50_median <- as.data.frame(prot_removeoutlier_filt50_median)
+
+usethis::use_data(prot_removeoutlier_filt50_median, overwrite = T)
+```
+
+# Align with metadata_filtered
+```{r}
+metadata_new_filtered <- metadata_new %>%
+  filter(sample_id != "s171")
+
+print(metadata_new_filtered$sample_id)
+print(colnames(prot_removeoutlier_filt50_median))
+
+comparison <- data.frame(
+  Metadata = metadata_new_filtered$sample_id,
+  Data     = colnames(prot_removeoutlier_filt50_median)
+)
+
+setdiff(metadata_new_filtered$sample_id, colnames(prot_removeoutlier_filt50_median)) # In metadata, not in data
+setdiff(colnames(prot_removeoutlier_filt50_median), metadata_new_filtered$sample_id) # In data, not in metadata
+
+# re-order
+metadata_new_filtered <- metadata_new_filtered[match(colnames(prot_removeoutlier_filt50_median), metadata_new_filtered$sample_id), ]
+all(metadata_new_filtered$sample_id == colnames(prot_removeoutlier_filt50_median)) # Should be TRUE
+
+comparison <- data.frame(
+  Metadata = metadata_new_filtered$sample_id,
+  Data = colnames(prot_removeoutlier_filt50_median)
+)
+
+usethis::use_data(metadata_new_filtered, overwrite = T)
+```
+
+
+# Boxplot2
+```{r}
+# quick view
+boxplot(
+  prot_removeoutlier_filt50_median, las = 2,              # vertical sample names
+  outline = FALSE,               # hides outlier points
+  col = "gray82",                # light box color
+  main = "Global (n=228), filtered_normalized",
+  ylab = "Log2 Intensity",
+  xlab = "Samples",
+  cex.axis = 0.8                 # smaller axis labels for clarity
+)
+
+
+# Reshape the data from wide to long
+prot_long <- prot_removeoutlier_filt50_median %>%
+  tibble::rownames_to_column("PG.Genes") %>%
+  pivot_longer(
+    cols = -PG.Genes, # Select all columns except the 'Protein' column
+    names_to = "sample_id",
+    values_to = "intensity"
+  )
+
+prot_long_meta <- left_join(prot_long, metadata_new_filtered, by = "sample_id")
+
+
+prot_long_meta <- prot_long_meta %>%
+  mutate(
+    beatbox_batch = factor(beatbox_batch, levels = paste0("g", 1:12)),
+    sample_id = factor(sample_id, levels = paste0("s", 1:229))
+  )
+
+intensity_boxplot2 <- ggplot(prot_long_meta, aes(x = sample_id, y = intensity, fill = beatbox_batch)) +
+  geom_boxplot(na.rm = TRUE) +
+  labs(
+    title = "Global (n=228), filtered_MedianScaleNormalized",
+    x = "Sample ID",
+    y = "Log2(Intensity)",
+    fill = "Batch"
+  ) +
+  theme_bw() +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1, size = 8),
+    legend.position = "right"
+  )
+
+print(intensity_boxplot2)
+
+ggsave(file.path("doc", "intensity_boxplot2.png"), plot = intensity_boxplot2, width = 25, height = 6, dpi = 300,bg = "white")
+```
+
+# Density2 plot
+```{r density2 plot}
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_removeoutlier_filt50_median, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot_global2 <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Global, filtered_normalized", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "none")
+
+density_plot_global2
+plotly::ggplotly(density_plot_global2)
+
+ggsave(file.path("doc", "density_plot_global2.png"), plot = density_plot_global2, width = 7, height = 4, dpi = 300, bg = "white")
+```
+
+
+# Missing values2
+```{r missing values2}
+dim(prot_removeoutlier_filt50_median)
+sum(is.na(prot_removeoutlier_filt50_median)) # 129040
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(prot_removeoutlier_filt50_median)) * 1
+
+annotation_col <- metadata_new_filtered %>%
+  dplyr::select(sample_id, diet, sex, strain) %>%
+  tibble::column_to_rownames(var = "sample_id")
+
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+colnames(missing_matrix)
+rownames(annotation_col)
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_filtered_normalized <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,              # Show the sample IDs
+  color = c("gray95", "black"),        # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),           # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Pattern of Missing Values Across Samples" # Add a title
+)
+
+
+# use this one, without annotation columns
+
+
+ggsave(file.path("doc", "na_heatmap_filtered_normalized.png"), plot = na_heatmap_filtered_normalized, width = 7, height = 6, dpi = 300,bg = "white")
+```
+
+
+```{r}
+data_long <- prot_removeoutlier_filt50_median %>%
+  rownames_to_column(var = "PG.Genes") %>%
+  pivot_longer(
+    cols = -PG.Genes,          # Pivot all columns except for the gene names
+    names_to = "sample_id",    # The new column for sample names
+    values_to = "log2_abundance" # The new column for abundance values
+  )
+
+
+protein_missing_summary <- data_long %>%
+  group_by(PG.Genes) %>%
+  summarize(
+    n_total_samples = n(),  # Total number of samples (should be 229 for all)
+    n_missing = sum(is.na(log2_abundance)), # Count how many NAs there are for this protein
+    n_present = sum(!is.na(log2_abundance)) # Count how many have a value
+  ) %>%
+  mutate(
+    percent_missing = (n_missing / n_total_samples) * 100,
+    percent_present = (n_present / n_total_samples) * 100
+  ) %>%
+  arrange(desc(percent_missing))
+
+
+################################################################################
+status_matrix <- prot_removeoutlier_filt50_median %>%
+  rownames_to_column(var = "PG.Genes") %>%
+  mutate(across(
+    .cols = -PG.Genes, # Apply this to all columns except the gene names column
+    .fns = ~ if_else(is.na(.), "Missing", "Present") # If value is NA -> "Missing", otherwise -> "Present"
+  ))
+
+# Example: I want to check the status of a specific protein, "APOE"
+status_matrix %>%
+  filter(PG.Genes == "Lime1")
+
+# Example: I want to see all proteins for a specific sample, "s5"
+status_matrix %>%
+  dplyr::select(PG.Genes, s5)
+
+######################################
+ggplot(protein_missing_summary, aes(x = percent_missing)) +
+geom_histogram(binwidth = 2, fill = "#56B4E9", color = "white", alpha = 0.85) +
+labs(title = "Distribution of Missingness Across Proteins",
+x = "Percent Missing (per protein)",
+y = "Protein Count") +
+theme_minimal(base_size = 14)
+
+top_missing <- protein_missing_summary %>% 
+  slice_max(order_by = percent_missing, n = 10)
+
+sample_missing_summary <- data_long %>%
+  group_by(sample_id) %>%
+  summarize(n_total_proteins = n(),
+            n_missing = sum(is.na(log2_abundance)),
+            percent_missing = 100 * n_missing / n_total_proteins) %>%
+  arrange(desc(percent_missing))
+
+###################
+# Count proteins with 0% missingness
+n_zero_missing <- sum(protein_missing_summary$percent_missing == 0, na.rm = TRUE)
+
+missigness_plot2 <- ggplot(protein_missing_summary, aes(x = percent_missing)) +
+  geom_histogram(
+    binwidth = 2,
+    fill = viridis(1, option = "D"),
+    color = "grey90",
+    alpha = 0.95,
+    boundary = 0
+  ) +
+  labs(
+    title = "Distribution of Missingness Across Proteins (n=228)",
+    x = "Percentage of Missing Values per Protein",
+    y = "Number of Proteins"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    plot.title = element_text(face = "bold", size = 15, hjust = 0.5, margin = margin(b = 6)),
+    plot.subtitle = element_text(hjust = 0.5),
+    axis.title.x = element_text(face = "bold", size = 13),
+    axis.title.y = element_text(face = "bold", size = 13),
+    legend.position = "none"
+  ) +
+  annotate(
+    "text",
+    x = 10,  # near the first few bins
+    y = max(table(cut(protein_missing_summary$percent_missing, breaks = seq(0, 100, by = 2)))) * 0.9,
+    label = paste("Proteins with 0% missingness:", n_zero_missing),
+    hjust = 0,
+    size = 5,
+    fontface = "bold"
+  )
+
+print(missigness_plot2)
+
+
+ggsave(file.path("doc", "missigness_plot2.png"), plot = missigness_plot2, width = 6, height = 5, dpi = 300,bg = "white")
+```
+
+
+
+
+# PCA 
+
+## all
+```{r}
+setequal(colnames(prot_removeoutlier_filt50_median), metadata_new_filtered$sample_id) # TRUE
+all(colnames(prot_removeoutlier_filt50_median) == metadata_new_filtered$sample_id) # TRUE
+
+dim(prot_removeoutlier_filt50_median) # 7629
+df_nona <- na.omit(prot_removeoutlier_filt50_median) # 6081
+
+n_original <- nrow(prot_removeoutlier_filt50_median)
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = T)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC): standard deviations squared.
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) # percentage of each component
+fviz_eig(pca_nona, addlabels = T)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+# Step 3: Merge PCA results with metadata
+pca_data_all <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    # Create the custom hover text column for our interactive plot
+    mutate(
+      weeks = as.factor(weeks),
+      hover_text = paste0(
+        "Sample: ", sample_id,
+        "<br>Diet: ", diet,
+        "<br>Sex: ", sex,
+        "<br>Strain: ", strain,
+        "<br>Weeks: ", weeks
+      )
+    )
+
+usethis::use_data(pca_data_all, overwrite = T)
+
+##########
+pca_day <- ggplot(pca_data_all, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-all: prep day batch (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day)
+plotly::ggplotly(pca_day)
+
+ggsave(file.path("doc", "pca_day.png"), plot = pca_day, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+#########################
+pca_beatbox <- ggplot(pca_data_all, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  #scale_color_brewer(palette = "Set3") +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-all: beatbox batch (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox)
+plotly::ggplotly(pca_beatbox)
+
+ggsave(file.path("doc", "pca_beatbox.png"), plot = pca_beatbox, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+####################### diet, sex , strain ####################################
+pca_diet_week <- ggplot(pca_data_all, aes(x = PC1, y = PC2, color = diet, shape = weeks, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("LFD" = "#21908CFF", "FFMD" = "#D55E00" )) +
+  labs(
+    title = "PCA: sex & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_diet_week)
+plotly::ggplotly(pca_diet_week)
+
+ggsave(file.path("doc", "pca_diet_week.png"), plot = pca_diet_week, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_sex_weeks <- ggplot(pca_data_all, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA: sex & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_sex_weeks)
+plotly::ggplotly(pca_sex_weeks)
+
+ggsave(file.path("doc", "pca_sex_weeks.png"), plot = pca_sex_weeks, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_strain_weeks <- ggplot(pca_data_all, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA: strain & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_weeks)
+plotly::ggplotly(pca_strain_weeks)
+
+ggsave(file.path("doc", "pca_strain_weeks.png"), plot = pca_strain_weeks, width = 7, height = 6, dpi = 300, bg = "white")
+
+```
+
+
+
+## ffmd
+```{r}
+metadata_ffmd <- metadata_new_filtered %>% filter(diet == "FFMD")
+df_ffmd <- prot_removeoutlier_filt50_median[, metadata_ffmd$sample_id] 
+dim(df_ffmd) # 7629 proteins - 149 samples
+all(colnames(df_ffmd) == metadata_ffmd$sample_id)  # Should be TRUE
+
+###############################################################################
+df_nona <- na.omit(df_ffmd) # 6238
+n_original <- nrow(df_ffmd)
+n_nona <- nrow(df_nona)
+
+pca_nona <- prcomp(t(df_nona), scale = T)
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+
+pca_data_ffmd <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    # Create the custom hover text column for our interactive plot
+  mutate(
+    weeks = as.factor(weeks),
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Sex: ", sex,
+      "<br>Strain: ", strain,
+      "<br>Weeks: ", weeks
+    )
+  )
+
+usethis::use_data(pca_data_ffmd, overwrite = T)
+
+################################################################################
+pca_day_ffmd <- ggplot(pca_data_ffmd, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-FFMD: prep day batch (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+
+print(pca_day_ffmd)
+plotly::ggplotly(pca_day_ffmd)
+
+ggsave(file.path("doc", "pca_day_ffmd.png"), plot = pca_day_ffmd, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+# beatbox
+pca_beatbox_ffmd <- ggplot(pca_data_ffmd, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  #scale_color_brewer(palette = "Set3") +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-FFMD: beatbox batch (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+
+print(pca_beatbox_ffmd)
+plotly::ggplotly(pca_beatbox_ffmd)
+
+ggsave(file.path("doc", "pca_beatbox_ffmd.png"), plot = pca_beatbox_ffmd, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+
+############################sex, strain, weeks ######################################
+
+
+pca_ffmd_sex <- ggplot(pca_data_ffmd, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA-FFMD: sex & weeks (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_sex)
+plotly::ggplotly(pca_ffmd_sex)
+
+ggsave(file.path("doc", "pca_ffmd_sex.png"), plot = pca_ffmd_sex, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+
+#####################
+pca_ffmd_strain <- ggplot(pca_data_ffmd, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-FFMD: strain & weeks (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_strain)
+plotly::ggplotly(pca_ffmd_strain)
+
+ggsave(file.path("doc", "pca_ffmd_strain.png"), plot = pca_ffmd_strain, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+
+######
+
+pca_ffmd_weeks <- ggplot(pca_data_ffmd, aes(x = PC1, y = PC2, color = weeks, shape = sex, text = hover_text)) + #hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + #size:diameter of each dot, alpha:transparency (0-invisible, 1=opaque)
+  #stat_ellipse(aes(group = weeks, fill = weeks), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  #scale_color_viridis_d(option = "cividis") +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-FFMD: weeks & sex (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_weeks)
+plotly::ggplotly(pca_ffmd_weeks)
+
+ggsave(file.path("doc", "pca_ffmd_weeks.png"), plot = pca_ffmd_weeks, width = 7, height = 6, dpi = 300, bg = "white")
+```
+
+
+## lfd
+```{r}
+metadata_lfd <- metadata_new_filtered %>% filter(diet == "LFD")
+df_lfd <- prot_removeoutlier_filt50_median[, metadata_lfd$sample_id] 
+dim(df_lfd) # 7629 proteins - 79 samples
+all(colnames(df_lfd) == metadata_lfd$sample_id)  # Should be TRUE
+
+###############################################################################
+df_nona <- na.omit(df_lfd) # 6238
+n_original <- nrow(df_lfd)
+n_nona <- nrow(df_nona)
+
+pca_nona <- prcomp(t(df_nona), scale = T)
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+
+pca_data_lfd <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    # Create the custom hover text column for our interactive plot
+  mutate(
+    weeks = as.factor(weeks),
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Sex: ", sex,
+      "<br>Strain: ", strain,
+      "<br>Weeks: ", weeks
+    )
+  )
+
+usethis::use_data(pca_data_lfd, overwrite = T)
+
+################################################################################
+pca_day_lfd <- ggplot(pca_data_lfd, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-LFD: prep day batch (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_lfd)
+plotly::ggplotly(pca_day_lfd)
+
+ggsave(file.path("doc", "pca_day_lfd.png"), plot = pca_day_lfd, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+# beatbox
+pca_beatbox_lfd <- ggplot(pca_data_lfd, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-LFD: beatbox batch (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_lfd)
+plotly::ggplotly(pca_beatbox_lfd)
+
+ggsave(file.path("doc", "pca_beatbox_lfd.png"), plot = pca_beatbox_lfd, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+############################sex, strain, weeks ######################################
+
+pca_lfd_sex <- ggplot(pca_data_lfd, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA-LFD: sex & weeks (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_sex)
+plotly::ggplotly(pca_lfd_sex)
+
+ggsave(file.path("doc", "pca_lfd_sex.png"), plot = pca_lfd_sex, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_lfd_strain <- ggplot(pca_data_lfd, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-LFD: strain & weeks (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_strain)
+plotly::ggplotly(pca_lfd_strain)
+
+ggsave(file.path("doc", "pca_lfd_strain.png"), plot = pca_lfd_strain, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+######
+pca_lfd_weeks <- ggplot(pca_data_lfd, aes(x = PC1, y = PC2, color = weeks, shape = sex, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-LFD: weeks & sex (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_weeks)
+plotly::ggplotly(pca_lfd_weeks)
+
+ggsave(file.path("doc", "pca_lfd_weeks.png"), plot = pca_lfd_weeks, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+```
+
+
+
+# Batch-Correction
+```{r}
+setequal(colnames(prot_removeoutlier_filt50_median), metadata_new_filtered$sample_id) # TRUE
+all(colnames(prot_removeoutlier_filt50_median) == metadata_new_filtered$sample_id) # TRUE
+
+prot_removeoutlier_filt50_median_batchcorr <- limma::removeBatchEffect(prot_removeoutlier_filt50_median,
+                                                     batch = metadata_new_filtered$beatbox_batch)
+
+prot_removeoutlier_filt50_median_batchcorr <- as.data.frame(prot_removeoutlier_filt50_median_batchcorr)
+
+usethis::use_data(prot_removeoutlier_filt50_median_batchcorr, overwrite = T)
+```
+
+
+# PCA after batchcorr
+## all
+```{r}
+setequal(colnames(prot_removeoutlier_filt50_median_batchcorr), metadata_new_filtered$sample_id) # TRUE
+all(colnames(prot_removeoutlier_filt50_median_batchcorr) == metadata_new_filtered$sample_id) # TRUE
+
+dim(prot_removeoutlier_filt50_median_batchcorr) # 7629
+df_nona <- na.omit(prot_removeoutlier_filt50_median_batchcorr) # 6081
+
+n_original <- nrow(prot_removeoutlier_filt50_median_batchcorr)
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = T)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC): standard deviations squared.
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) # percentage of each component
+fviz_eig(pca_nona, addlabels = T)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+# Step 3: Merge PCA results with metadata
+pca_data_all_batchcorr <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    # Create the custom hover text column for our interactive plot
+    mutate(
+      weeks = as.factor(weeks),
+      hover_text = paste0(
+        "Sample: ", sample_id,
+        "<br>Diet: ", diet,
+        "<br>Sex: ", sex,
+        "<br>Strain: ", strain,
+        "<br>Weeks: ", weeks
+      )
+    )
+
+usethis::use_data(pca_data_all_batchcorr, overwrite = T)
+
+##########
+pca_day_batchcorr <- ggplot(pca_data_all_batchcorr, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-all: prep day batchcorr (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_batchcorr)
+plotly::ggplotly(pca_day_batchcorr)
+
+ggsave(file.path("doc", "pca_day_batchcorr.png"), plot = pca_day_batchcorr, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+#########################
+pca_beatbox_batchcorr <- ggplot(pca_data_all_batchcorr, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  #stat_ellipse(aes(group = as.factor(cage_id)), type = "t", level = 0.95, geom = "path", show.legend = FALSE) +
+  #scale_color_brewer(palette = "Set3") +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-all: beatbox batchcorr (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_batchcorr)
+plotly::ggplotly(pca_beatbox_batchcorr)
+
+ggsave(file.path("doc", "pca_beatbox_batchcorr.png"), plot = pca_beatbox, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+####################### diet, sex , strain ####################################
+pca_diet_week_batchcorr <- ggplot(pca_data_all_batchcorr, aes(x = PC1, y = PC2, color = diet, shape = weeks, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = diet, fill = diet), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("LFD" = "#21908CFF", "FFMD" = "#D55E00" )) +
+  labs(
+    title = "PCA batchcorr: sex & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_diet_week_batchcorr)
+plotly::ggplotly(pca_diet_week_batchcorr)
+
+ggsave(file.path("doc", "pca_diet_week_batchcorr.png"), plot = pca_diet_week_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_sex_weeks_batchcorr <- ggplot(pca_data_all_batchcorr, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) + # hover text is for plotly (interactive)
+  geom_point(size = 3.5, alpha = 0.7) + # size: diameter of each dot, alpha: transparency (0=invisible, 1=opaque)
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) + # Overlay 95% t-distribution ellipses by diet group
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA batchcorr: sex & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_sex_weeks_batchcorr)
+plotly::ggplotly(pca_sex_weeks_batchcorr)
+
+ggsave(file.path("doc", "pca_sex_weeks_batchcorr.png"), plot = pca_sex_weeks_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+
+pca_strain_weeks_batchcorr <- ggplot(pca_data_all_batchcorr, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA batchcorr: strain & weeks (n=228)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_weeks_batchcorr)
+plotly::ggplotly(pca_strain_weeks_batchcorr)
+
+ggsave(file.path("doc", "pca_strain_weeks_batchcorr.png"), plot = pca_strain_weeks_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+```
+
+
+## ffmd batchcorr
+```{r}
+metadata_ffmd <- metadata_new_filtered %>% filter(diet == "FFMD")
+df_ffmd_batchcorr <- prot_removeoutlier_filt50_median_batchcorr[, metadata_ffmd$sample_id] 
+dim(df_ffmd_batchcorr) # 7629 proteins - 149 samples
+all(colnames(df_ffmd_batchcorr) == metadata_ffmd$sample_id)  # Should be TRUE
+
+###############################################################################
+df_nona <- na.omit(df_ffmd_batchcorr) # 6238
+n_original <- nrow(df_ffmd_batchcorr)
+n_nona <- nrow(df_nona)
+
+pca_nona <- prcomp(t(df_nona), scale = T)
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+
+
+pca_data_ffmd_batchcorr <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    mutate(
+      weeks = as.factor(weeks),
+      hover_text = paste0(
+        "Sample: ", sample_id,
+        "<br>Diet: ", diet,
+        "<br>Sex: ", sex,
+        "<br>Strain: ", strain,
+        "<br>Weeks: ", weeks
+      )
+    )
+
+usethis::use_data(pca_data_ffmd_batchcorr, overwrite = T)
+
+################################################################################
+pca_day_ffmd_batchcorr <- ggplot(pca_data_ffmd_batchcorr, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-FFMD batchcorr: prep day batch (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_ffmd_batchcorr)
+plotly::ggplotly(pca_day_ffmd_batchcorr)
+
+ggsave(file.path("doc", "pca_day_ffmd_batchcorr.png"), plot = pca_day_ffmd_batchcorr, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+# beatbox
+pca_beatbox_ffmd_batchcorr <- ggplot(pca_data_ffmd_batchcorr, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-FFMD batchcorr: beatbox batch (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_ffmd_batchcorr)
+plotly::ggplotly(pca_beatbox_ffmd_batchcorr)
+
+ggsave(file.path("doc", "pca_beatbox_ffmd_batchcorr.png"), plot = pca_beatbox_ffmd_batchcorr, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+############################sex, strain, weeks ######################################
+pca_ffmd_sex_batchcorr <- ggplot(pca_data_ffmd_batchcorr, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA-FFMD batchcorr: sex & weeks (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_sex_batchcorr)
+plotly::ggplotly(pca_ffmd_sex_batchcorr)
+
+ggsave(file.path("doc", "pca_ffmd_sex_batchcorr.png"), plot = pca_ffmd_sex_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_ffmd_strain_batchcorr <- ggplot(pca_data_ffmd_batchcorr, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-FFMD batchcorr: strain & weeks (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_strain_batchcorr)
+plotly::ggplotly(pca_ffmd_strain_batchcorr)
+
+ggsave(file.path("doc", "pca_ffmd_strain_batchcorr.png"), plot = pca_ffmd_strain_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+######
+pca_ffmd_weeks_batchcorr <- ggplot(pca_data_ffmd_batchcorr, aes(x = PC1, y = PC2, color = weeks, shape = sex, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-FFMD batchcorr: weeks & sex (n=149)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_ffmd_weeks_batchcorr)
+plotly::ggplotly(pca_ffmd_weeks_batchcorr)
+
+ggsave(file.path("doc", "pca_ffmd_weeks_batchcorr.png"), plot = pca_ffmd_weeks_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+```
+
+## lfd batchcorr
+
+```{r}
+metadata_lfd <- metadata_new_filtered %>% filter(diet == "LFD")
+df_lfd_batchcorr <- prot_removeoutlier_filt50_median[, metadata_lfd$sample_id] 
+dim(df_lfd_batchcorr) # 7629 proteins - 79 samples
+all(colnames(df_lfd_batchcorr) == metadata_lfd$sample_id)  # Should be TRUE
+
+###############################################################################
+df_nona <- na.omit(df_lfd_batchcorr) # 6238
+n_original <- nrow(df_lfd_batchcorr)
+n_nona <- nrow(df_lfd_batchcorr)
+
+pca_nona <- prcomp(t(df_nona), scale = T)
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1) #percentage of each component
+fviz_eig(pca_nona, addlabels = T)  #scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) # convert pca results as data frame 
+
+
+pca_data_lfd_batchcorr <- pca_results %>%
+    dplyr::select(PC1, PC2, PC3, PC4) %>% 
+    mutate(sample_id = rownames(.)) %>%  
+    inner_join(metadata_new, by = "sample_id") %>% 
+    mutate(
+      weeks = as.factor(weeks),
+      hover_text = paste0(
+        "Sample: ", sample_id,
+        "<br>Diet: ", diet,
+        "<br>Sex: ", sex,
+        "<br>Strain: ", strain,
+        "<br>Weeks: ", weeks
+      )
+    )
+
+usethis::use_data(pca_data_lfd_batchcorr, overwrite = T)
+
+################################################################################
+pca_day_lfd_batchcorr <- ggplot(pca_data_lfd_batchcorr, aes(x = PC1, y = PC2, color = prep_day_batch, shape = diet)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-LFD batchcorr: prep day batch (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_day_lfd_batchcorr)
+plotly::ggplotly(pca_day_lfd_batchcorr)
+
+ggsave(file.path("doc", "pca_day_lfd_batchcorr.png"), plot = pca_day_lfd_batchcorr, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+# beatbox
+pca_beatbox_lfd_batchcorr <- ggplot(pca_data_lfd_batchcorr, aes(x = PC1, y = PC2, color = beatbox_batch, shape = prep_day_batch)) +
+  geom_point(aes(text = hover_text), size = 3.5, alpha = 0.7) +
+  scale_color_viridis_d(option = "turbo") +
+  labs(
+    title = "PCA-LFD batchcorr: beatbox batch (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_beatbox_lfd_batchcorr)
+plotly::ggplotly(pca_beatbox_lfd_batchcorr)
+
+ggsave(file.path("doc", "pca_beatbox_lfd_batchcorr.png"), plot = pca_beatbox_lfd_batchcorr, width = 8, height = 6, dpi = 300, bg = "white")
+
+
+############################sex, strain, weeks ######################################
+pca_lfd_sex_batchcorr <- ggplot(pca_data_lfd_batchcorr, aes(x = PC1, y = PC2, color = sex, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = sex, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("M" = "#228833", "F" = "#EE6677" )) +
+  labs(
+    title = "PCA-LFD batchcorr: sex & weeks (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_sex_batchcorr)
+plotly::ggplotly(pca_lfd_sex_batchcorr)
+
+ggsave(file.path("doc", "pca_lfd_sex_batchcorr.png"), plot = pca_lfd_sex_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+#####################
+pca_lfd_strain_batchcorr <- ggplot(pca_data_lfd_batchcorr, aes(x = PC1, y = PC2, color = strain, shape = weeks, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = sex), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "PCA-LFD batchcorr: strain & weeks (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_strain_batchcorr)
+plotly::ggplotly(pca_lfd_strain_batchcorr)
+
+ggsave(file.path("doc", "pca_lfd_strain_batchcorr.png"), plot = pca_lfd_strain_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+######
+pca_lfd_weeks_batchcorr <- ggplot(pca_data_lfd_batchcorr, aes(x = PC1, y = PC2, color = weeks, shape = sex, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  scale_color_brewer(palette = "Set1") +
+  labs(
+    title = "PCA-LFD batchcorr: weeks & sex (n=79)",
+    subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC2 (", pca_var_perc[2], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_lfd_weeks_batchcorr)
+plotly::ggplotly(pca_lfd_weeks_batchcorr)
+
+ggsave(file.path("doc", "pca_lfd_weeks_batchcorr.png"), plot = pca_lfd_weeks_batchcorr, width = 7, height = 6, dpi = 300, bg = "white")
+
+```
+
+

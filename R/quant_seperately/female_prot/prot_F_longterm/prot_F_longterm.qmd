@@ -1,0 +1,740 @@
+---
+title: "prot_F_longterm"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+source(here::here("R/functions.R"))
+load(here::here("data/prot_F_renamed_longterm.rda"))
+load(here::here("data/metadata_F_longterm.rda"))
+load(here::here("data/prot_F_renamed_longterm_filt_norm.rda"))
+load(here::here("data/prot_F_renamed_longterm_filt_norm_batchcorr.rda"))
+```
+
+
+
+# VV1
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(prot_F_renamed_longterm))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv1 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Proteins per sample, female: longterm study (n=50)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+
+print(vv1)
+ggsave(file.path("doc", "vv1_male_prot_longterm.png"), plot = vv1, width = 7, height = 3, dpi = 300, bg = "white")
+
+dim(prot_F_renamed_longterm)
+sum(is.na(prot_F_renamed_longterm)) # 60704
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(prot_F_renamed_longterm)) * 1
+
+annotation_col <- metadata_F_longterm %>%
+  dplyr::select(new_sample_id, strain, weeks) %>%
+  tibble::column_to_rownames(var = "new_sample_id")
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_female_norm <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,              # Hide sample IDs
+  color = c("gray95", "black"),       # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),            # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Female, longterm"  # Add a title
+)
+
+ggsave(file.path("doc", "na_heatmap_female_norm.png"),plot = na_heatmap_female_norm, width = 7, height = 6, dpi = 300, bg = "white")
+
+```
+
+
+## Distribution
+```{r}
+# Now, create the plot and save it
+png(filename = "doc/boxplot_prot_female_longterm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_longterm, 
+        main = "Female longterm study (n=50)",
+        ylab = "Log2 Intensity",
+        col = "lightblue")
+
+dev.off()
+
+##########
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_F_renamed_longterm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+density_plot_global <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, female:longterm (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot_global
+ggsave(file.path("doc", "densityplot_F_prot_longterm.png"),
+       plot = density_plot_global, width = 7, height = 4, dpi = 300, bg = "white")
+
+```
+# Filter
+```{r}
+# Filter on total matrix (longterm)
+prot_F_renamed_longterm_filt100 <- PhosR::selectOverallPercent(prot_F_renamed_longterm, 1.0)   #6667
+prot_F_renamed_longterm_filt70  <- PhosR::selectOverallPercent(prot_F_renamed_longterm, 0.70)  #7591
+prot_F_renamed_longterm_filt50  <- PhosR::selectOverallPercent(prot_F_renamed_longterm, 0.50)  #7744
+
+prot_F_renamed_longterm_filt <- prot_F_renamed_longterm_filt70
+
+usethis::use_data(prot_F_renamed_longterm_filt, overwrite = TRUE)
+
+```
+# VV2
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(prot_F_renamed_longterm_filt))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv2 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text",
+           x = length(count_data$column) / 2 + 0.5,
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Proteins per sample, female-longterm (n=50)",
+    x = "",
+    y = "Valid Values"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+    axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+    axis.text.y  = element_text(size = 12, color = "black"),
+    axis.title.x = element_text(size = 14, color = "black"),
+    axis.title.y = element_text(size = 14, color = "black"),
+    panel.grid.major.x = element_blank()
+  )
+
+print(vv2)
+ggsave(file.path("doc", "vv2_female_prot_longterm.png"),
+       plot = vv2, width = 7, height = 3, dpi = 300, bg = "white")
+
+```
+# Normalize
+```{r}
+# from PhosR package — longterm
+prot_F_renamed_longterm_filt_norm <- medianScaling(prot_F_renamed_longterm_filt[1:ncol(prot_F_renamed_longterm_filt)],scale = FALSE)
+prot_F_renamed_longterm_filt_norm <- as.data.frame(prot_F_renamed_longterm_filt_norm)
+
+usethis::use_data(prot_F_renamed_longterm_filt_norm, overwrite = TRUE)
+```
+# Distribution after normalization
+```{r}
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_longterm_filt_norm, 
+        main = "Male longterm (n=50)",
+        ylab = "Log2 Intensity",
+        col = "lightblue")
+
+# Now, create the plot and save it
+png(filename = "doc/boxplot_prot_female_renamed_longterm_filt_norm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_longterm_filt_norm, 
+        main = "Female longterm (n=50)",
+        ylab = "Log2 Intensity",
+        col = "lightblue")
+
+dev.off()
+
+####
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_F_renamed_longterm_filt_norm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+density_plot_global <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, female:longterm (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot_global
+ggsave(file.path("doc", "densityplot_prot_M_longterm_norm.png"), plot = density_plot_global, width = 7, height = 4, dpi = 300, bg = "white")
+```
+# PCA2 after norm
+```{r}
+# PCA3
+n_original <- nrow(prot_F_renamed_longterm_filt_norm) # 
+df_nona <- na.omit(prot_F_renamed_longterm_filt_norm) # 
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_longterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_F_longterm$new_sample_id)
+
+
+pca_day_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "strain",
+    palette_name = "Set1",
+    plot_title = "global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+pca_beatbox_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "global, F, longterm (n=50)",
+    ellipse = FALSE
+)
+
+
+pca_strain_norm <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+
+pca_weeks_norm <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+#####################
+pca_strain_norm_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "global, F, longterm (n=50)",
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_norm_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "global, F, longterm (n=50)",
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_norm_pc23)
+print(pca_strain_norm_pc13)
+plotly::ggplotly(pca_beatbox)
+plotly::ggplotly(pca_day)
+
+ggsave(file.path("doc", "pca_day_norm_Flong_norm.png"),     plot = pca_day_norm,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_norm_Flong_norm.png"), plot = pca_beatbox_norm, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_norm_Flong_norm.png"),  plot = pca_strain_norm,  width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_norm_Flong_norm.png"),   plot = pca_weeks_norm,   width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain23_norm_Flong_norm.png"), plot = pca_strain_norm_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain13_norm_Flong_norm.png"), plot = pca_strain_norm_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+# Batchcorr
+```{r}
+# Batchcorr
+setequal(colnames(prot_F_renamed_longterm_filt_norm), metadata_F_longterm$new_sample_id) # TRUE
+all(colnames(prot_F_renamed_longterm_filt_norm) == metadata_F_longterm$new_sample_id)    # TRUE
+
+prot_F_renamed_longterm_filt_norm_batchcorr <- limma::removeBatchEffect(
+  prot_F_renamed_longterm_filt_norm,
+  batch = metadata_F_longterm$beatbox_batch
+)
+prot_F_renamed_longterm_filt_norm_batchcorr <- as.data.frame(prot_F_renamed_longterm_filt_norm_batchcorr)
+
+usethis::use_data(prot_F_renamed_longterm_filt_norm_batchcorr, overwrite = TRUE)
+
+```
+
+```{r}
+# PCA4 after batchcorr
+n_original <- nrow(prot_F_renamed_longterm_filt_norm_batchcorr) # 7565
+df_nona <- na.omit(prot_F_renamed_longterm_filt_norm_batchcorr) # 6287
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_longterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_F_longterm$new_sample_id)
+
+
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "strain",
+    palette_name = "Set1",
+    plot_title = "global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+pca_beatbox_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "batchcorr: global, F, longterm (n=50)",
+    ellipse = FALSE
+)
+
+pca_weeks_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "batchcorr: global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "batchcorr: global, F, longterm (n=50)",
+    ellipse = TRUE
+)
+
+#####################
+pca_strain_batchcorr_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "batchcorr: global, F, longterm (n=50)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_batchcorr_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "batchcorr: global, F, longterm (n=50)",
+    #subtitle = paste("based on", n_nona, "proteins out of", n_original),
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_batchcorr_pc23)
+print(pca_strain_batchcorr_pc13)
+
+ggsave(file.path("doc", "pca_day_Flong_norm_batchcorr.png"),     plot = pca_day_batchcorr,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_Flong_norm_batchcorr.png"), plot = pca_beatbox_batchcorr,  width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_Flong_norm_batchcorr.png"),   plot = pca_weeks_batchcorr,    width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_Flong_norm_batchcorr.png"),  plot = pca_strain_batchcorr,   width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain23_Flong_norm_batchcorr.png"), plot = pca_strain_batchcorr_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain13_Flong_norm_batchcorr.png"), plot = pca_strain_batchcorr_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+# Limma: batchcorr data
+```{r}
+# Limma: batchcorr data
+class(metadata_F_longterm$weeks)
+levels(metadata_F_longterm$weeks)
+
+metadata_F_longterm$weeks <- factor(metadata_F_longterm$weeks, levels = c("24", "36", "48"))
+metadata_F_longterm$strain<- factor(metadata_F_longterm$strain, levels = c("J", "Ntac"))
+metadata_F_longterm$Combined <-
+  with(metadata_F_longterm, factor(paste0("w", weeks, "_", strain)))
+
+class(metadata_F_longterm$Combined)
+levels(metadata_F_longterm$Combined)
+
+design_batchcorr <- model.matrix(~0 + Combined, data = metadata_F_longterm)
+colnames(design_batchcorr) <- sub("Combined", "", colnames(design_batchcorr))
+colnames(design_batchcorr)
+
+contrasts_batchcorr <- makeContrasts(
+  main_w24_w36 = ((w36_J + w36_Ntac)/2) - ((w24_J + w24_Ntac)/2), 
+  main_w36_w48 = ((w48_J + w36_Ntac)/2) - ((w48_J + w36_Ntac)/2),
+  main_w24_w38 = ((w48_J + w24_Ntac)/2) - ((w48_J + w24_Ntac)/2),
+  
+  J_w24_w36    = w36_J    - w24_J,
+  Ntac_w24_w36 = w36_Ntac - w24_Ntac,
+  J_w36_w48    = w48_J    - w36_J, 
+  Ntac_w36_w48 = w48_Ntac - w36_Ntac,
+  J_w24_w48 = w48_J - w24_J, 
+  Ntac_w24_w48 = w48_Ntac - w24_Ntac,
+  levels = design_batchcorr
+)
+
+fit1_batchcorr <- lmFit(prot_F_renamed_longterm_filt_norm_batchcorr, design_batchcorr)
+fit2_batchcorr <- contrasts.fit(fit1_batchcorr, contrasts_batchcorr)
+fit2_batchcorr <- eBayes(fit2_batchcorr)
+
+colnames(fit2_batchcorr)
+
+limma_results_F_longterm_main_w24_w36   <- get_limma_results(fit2_batchcorr, "main_w24_w36",   "F Main effect w24-36") # Total: 12 - UP: 7 | DOWN: 5
+limma_results_F_longterm_main_w36_w48   <- get_limma_results(fit2_batchcorr, "Ntac_w36_w48",   "F Main effect w36-48") # Total: 0 - UP: 0 | DOWN: 0
+limma_results_F_longterm_main_w24_w48   <- get_limma_results(fit2_batchcorr, "Ntac_w24_w48",   "F Main effect w24-48") # Total: 40 - UP: 25 | DOWN: 15
+
+limma_results_F_longterm_J_w24_w36_batchcorr      <- get_limma_results(fit2_batchcorr, "J_w24_w36",      "F J w24-36")       # Total: 0 - UP: 0 | DOWN: 0
+limma_results_F_longterm_Ntac_w24_w36_batchcorr   <- get_limma_results(fit2_batchcorr, "Ntac_w24_w36",   "F Ntac w24-36")    # Total: 2 - UP: 1 | DOWN: 1
+limma_results_F_longterm_J_w36_w48_batchcorr      <- get_limma_results(fit2_batchcorr, "J_w36_w48",      "F J w36-48")       # Total: 2 - UP: 2 | DOWN: 0
+limma_results_F_longterm_Ntac_w36_w48_batchcorr   <- get_limma_results(fit2_batchcorr, "Ntac_w36_w48",   "F Ntac w36-48")    # Total: 0 - UP: 0 | DOWN: 0
+limma_results_F_longterm_J_w24_w48   <- get_limma_results(fit2_batchcorr, "J_w24_w48",   "F J w24-48") # Total: 18 - UP: 18 | DOWN: 10
+limma_results_F_longterm_Ntac_w24_w48   <- get_limma_results(fit2_batchcorr, "Ntac_w24_w48",   "F Ntac w24-48") # Total: 48 - UP: 30 | DOWN: 18
+
+```
+
+# Limma: non-batchcorr data
+Add batch variable directly in the design matrix. 
+```{r}
+class(metadata_F_longterm$weeks)
+levels(metadata_F_longterm$weeks)
+
+metadata_F_longterm$weeks <- factor(metadata_F_longterm$weeks, levels = c("24", "36", "48"))
+metadata_F_longterm$strain<- factor(metadata_F_longterm$strain, levels = c("J", "Ntac"))
+metadata_F_longterm$Combined <-
+  with(metadata_F_longterm, factor(paste0("w", weeks, "_", strain)))
+
+class(metadata_F_longterm$Combined)
+levels(metadata_F_longterm$Combined)
+
+design <- model.matrix(~ 0 + Combined + beatbox_batch, data = metadata_F_longterm)
+colnames(design) <- sub("Combined", "", colnames(design))
+colnames(design)
+
+contrasts <- makeContrasts(
+  main_w24_w36 = ((w36_J + w36_Ntac)/2) - ((w24_J + w24_Ntac)/2), 
+  main_w36_w48 = ((w48_J + w36_Ntac)/2) - ((w48_J + w36_Ntac)/2),
+  main_w24_w38 = ((w48_J + w24_Ntac)/2) - ((w48_J + w24_Ntac)/2),
+  
+  main_w24_w36 = ((w36_J + w36_Ntac)/2) - ((w24_J + w24_Ntac)/2), 
+  main_w36_w48 = ((w48_J + w36_Ntac)/2) - ((w48_J + w36_Ntac)/2),
+  main_w24_w38 = ((w48_J + w24_Ntac)/2) - ((w48_J + w24_Ntac)/2),
+  
+  J_w24_w36    = w36_J    - w24_J,
+  Ntac_w24_w36 = w36_Ntac - w24_Ntac,
+  J_w36_w48    = w48_J    - w36_J, 
+  Ntac_w36_w48 = w48_Ntac - w36_Ntac,
+  J_w24_w48 = w48_J - w24_J, 
+  Ntac_w24_w48 = w48_Ntac - w24_Ntac,
+  
+  levels = design
+)
+
+
+fit1 <- lmFit(prot_F_renamed_longterm_filt_norm, design)
+fit2 <- contrasts.fit(fit1, contrasts)
+fit2 <- eBayes(fit2)
+
+colnames(fit2)
+
+limma_results_F_longterm_main_w24_w36   <- get_limma_results(fit2, "main_w24_w36",   "F Main effect w24-36") # Total: 404 - UP: 133 | DOWN: 271
+limma_results_F_longterm_main_w36_w48   <- get_limma_results(fit2, "Ntac_w36_w48",   "F Main effect w36-48") # Total: 0 - UP: 0 | DOWN: 0
+limma_results_F_longterm_main_w24_w48   <- get_limma_results(fit2, "Ntac_w24_w48",   "F Main effect w24-48") # Total: 40 - UP: 25 | DOWN: 15
+
+limma_results_F_longterm_J_w24_w36   <- get_limma_results(fit2, "J_w24_w36",   "F J w24-36") # Total: 4 - UP: 2 | DOWN: 2
+limma_results_F_longterm_Ntac_w24_w36   <- get_limma_results(fit2, "Ntac_w24_w36",   "F Ntac w24-36") # Total: 7 - UP: 3 | DOWN: 4
+
+limma_results_F_longterm_J_w36_w48   <- get_limma_results(fit2, "J_w36_w48",   "F J w36-48") # Total: 2 - UP: 2 | DOWN: 0
+limma_results_F_longterm_Ntac_w36_w48   <- get_limma_results(fit2, "Ntac_w36_w48",   "F Ntac w36-48") # Total: 0 - UP: 0 | DOWN: 0
+
+limma_results_F_longterm_J_w24_w48   <- get_limma_results(fit2, "J_w24_w48",   "F J w24-48") # Total: 3 - UP: 2 | DOWN: 1
+limma_results_F_longterm_Ntac_w24_w48   <- get_limma_results(fit2, "Ntac_w24_w48",   "F Ntac w24-48") # Total: 40 - UP: 25 | DOWN: 15
+```
+
+# ORA
+```{r}
+background_proteins <- rownames(prot_F_renamed_longterm_filt_norm)
+length(background_proteins) # 7612
+
+sig_F_longterm_main_24_36 <- limma_results_F_longterm_main_w24_w36$sig$Protein # 404
+
+
+ora_mf <- enrichGO(
+    gene          = sig_F_longterm_main_24_36,
+    universe      = background_proteins,
+    OrgDb         = org.Mm.eg.db,
+    keyType       = "SYMBOL",
+    ont           = "MF",
+    pAdjustMethod = "BH",
+    pvalueCutoff  = 1,
+    qvalueCutoff  = 0.05,
+    readable      = TRUE
+)
+
+library(enrichplot)   # make sure it's loaded
+
+# If you accidentally overwrote/defined dotplot in your environment
+# remove the custom one to avoid confusion:
+# rm(dotplot)
+
+p <- enrichplot::dotplot(ora_mf, showCategory = 10) + 
+  ggtitle("GOMF-ORA: F, longterm, main effect 24–36")
+print(p)
+
+```
+
+# subgroup
+```{r}
+metadata_F_longterm_J <- metadata_F_longterm %>% filter(strain == "J")
+prot_F_longterm_J <- prot_F_renamed_longterm_filt_norm_batchcorr[, metadata_F_longterm_J$new_sample_id] # 7642
+dim(prot_F_longterm_J) # 24 samples
+all(colnames(prot_F_longterm_J) == metadata_F_longterm_J$new_sample_id)  # Should be TRUE
+
+metadata_F_longterm_Ntac <- metadata_F_longterm %>% filter(strain == "Ntac")
+prot_F_longterm_Ntac <- prot_F_renamed_longterm_filt_norm_batchcorr[, metadata_F_longterm_Ntac$new_sample_id]
+dim(prot_F_longterm_Ntac) # 26 samples
+all(colnames(prot_F_longterm_Ntac) == metadata_F_longterm_Ntac$new_sample_id)
+```
+
+## pca J
+```{r}
+dim(prot_F_longterm_J) # 18 samples
+df_nona <- na.omit(prot_F_longterm_J) 
+
+n_original <- nrow(prot_F_longterm_J) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_longterm_J, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_longterm_J$new_sample_id)
+
+pca_J <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "global, F, longterm, J (n=27)",
+    ellipse = TRUE
+)
+
+
+ggsave(file.path("doc", "pca_weeks_F_longterm_J.png"), plot = pca_J, width = 6, height = 5, dpi = 300, bg = "white")
+
+```
+```{r}
+dim(prot_F_longterm_Ntac) # 18 samples
+df_nona <- na.omit(prot_F_longterm_Ntac) 
+
+n_original <- nrow(prot_F_longterm_Ntac) # 7642
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_longterm_Ntac, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_longterm_Ntac$new_sample_id)
+
+pca_Ntac <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "global, F, longterm, Ntac (n=27)",
+    ellipse = TRUE
+)
+
+
+ggsave(file.path("doc", "pca_weeks_F_longterm_Ntac.png"), plot = pca_Ntac, width = 6, height = 5, dpi = 300, bg = "white")
+```
+
+

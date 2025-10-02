@@ -55,3 +55,4 @@ library(limma)           # for removeBatchEffect
 library(edgeR)
 library(pheatmap)
 library(viridis)
+library(patchwork)

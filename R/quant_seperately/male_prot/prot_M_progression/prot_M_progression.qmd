@@ -1,0 +1,377 @@
+---
+title: "prot_M_progression"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+source(here::here("R/functions.R"))
+load(here::here("data/prot_M_renamed.rda"))
+load(here::here("data/metadata_M.rda"))
+```
+
+# metadata
+```{r}
+metadata_M <- metadata %>% filter(sex == "M")
+prot_M_renamed
+```
+
+
+# Filter
+```{r}
+all(colnames(prot_M_renamed) == metadata_M$sample_id)  # checks the order
+
+#Filter on total matrix
+prot_M_renamed_filt100 <- PhosR::selectOverallPercent(prot_M_renamed, 1) # 6111
+prot_M_renamed_filt70 <- PhosR::selectOverallPercent(prot_M_renamed, 0.7) # 7236
+
+prot_M_renamed_filt <- prot_M_renamed_filt70
+usethis::use_data(prot_M_renamed_filt, overwrite = T)
+
+boxplot(prot_M_renamed_filt)
+```
+
+# Normalize 
+```{r}
+# from PhosR package
+prot_M_renamed_filt_norm <- medianScaling(prot_M_renamed_filt[1:ncol(prot_M_renamed_filt)], scale = FALSE)
+prot_M_renamed_filt_norm <- as.data.frame(prot_M_renamed_filt_norm)
+
+usethis::use_data(prot_M_renamed_filt_norm, overwrite = T)
+
+boxplot(prot_M_renamed_filt_norm)
+```
+
+# PCA1
+```{r}
+n_original <- nrow(prot_M_renamed_filt_norm) # 7565
+df_nona <- na.omit(prot_M_renamed_filt_norm) # 6287
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M, by = "sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain, 
+      "<br>Weeks: ", weeks
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_M$sample_id)
+
+
+ 
+pca_day_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "global, M (n=116)",
+    ellipse = TRUE
+)
+
+
+pca_beatbox_norm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "global, M (n=116)",
+    ellipse = FALSE
+)
+
+pca_diet_norm <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "global, M (n=116)",
+    ellipse = TRUE
+)
+
+pca_strain_norm <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "global, M (n=116)",
+    ellipse = TRUE
+)
+
+pca_weeks_norm <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "global, M (n=116)",
+    ellipse = TRUE
+)
+
+plotly::ggplotly(pca_weeks_norm)
+
+ggsave(file.path("doc", "prot_M_pca_weeks_norm.png"), plot = pca_weeks_norm, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Batchcorr
+```{r}
+setequal(colnames(prot_M_renamed_filt_norm), metadata_M$sample_id) # TRUE
+all(colnames(prot_M_renamed_filt_norm) == metadata_M$sample_id)    # TRUE
+
+prot_M_renamed_filt_norm_batchcorr <- limma::removeBatchEffect(
+  prot_M_renamed_filt_norm,
+  batch = metadata_M$beatbox_batch
+)
+prot_M_renamed_filt_norm_batchcorr <- as.data.frame(prot_M_renamed_filt_norm_batchcorr)
+usethis::use_data(prot_M_renamed_filt_norm_batchcorr, overwrite = TRUE)
+```
+# PCA after batchcorr
+```{r}
+n_original <- nrow(prot_M_renamed_filt_norm_batchcorr) # 7565
+df_nona <- na.omit(prot_M_renamed_filt_norm_batchcorr) # 6287
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_M, by = "sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain, 
+      "<br>Weeks: ", weeks
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_M$sample_id)
+
+
+ 
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "batchcorr: global, M (n=116)",
+    ellipse = TRUE
+)
+
+
+pca_beatbox_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "batchcorr: global, M (n=116)",
+    ellipse = FALSE
+)
+
+pca_diet_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "batchcorr: global, M (n=116)",
+    ellipse = TRUE
+)
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "batchcorr: global, M (n=116)",
+    ellipse = TRUE
+)
+
+pca_weeks_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "strain",
+    palette_name = "Dark2",
+    plot_title = "batchcorr: global, M (n=116)",
+    ellipse = TRUE
+)
+
+
+ggsave(file.path("doc", "pca_weeks_batchcorr.png"), plot = pca_weeks_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+
+# Limma: batchcorr data
+```{r}
+class(metadata_M$weeks)
+levels(metadata_M$weeks)
+
+metadata_M$weeks <- factor(metadata_M$weeks, levels = c("12", "24", "36", "48"))
+metadata_M$strain<- factor(metadata_M$strain, levels = c("J", "Ntac"))
+metadata_M$Combined <- with(metadata_M, factor(paste0("w", weeks, "_", strain, "_", diet)))
+
+class(metadata_M$Combined)
+levels(metadata_M$Combined)
+
+# design
+design_batchcorr <- model.matrix(~0 + Combined, data = metadata_M)
+colnames(design_batchcorr) <- sub("Combined", "", colnames(design_batchcorr))
+
+contrasts_batchcorr <- makeContrasts(
+  # Main effects within LFD (average J & Ntac)
+  main_w12_w24_LFD = ((w24_J_LFD + w24_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+  main_w12_w36_LFD = ((w36_J_LFD + w36_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+  main_w12_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+
+  main_w24_w36_LFD = ((w36_J_LFD + w36_Ntac_LFD)/2) - ((w24_J_LFD + w24_Ntac_LFD)/2),
+  main_w24_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w24_J_LFD + w24_Ntac_LFD)/2),
+  main_w36_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w36_J_LFD + w36_Ntac_LFD)/2),
+
+  # Pairwise within LFD (per strain)
+  J_w12_w24_LFD = w24_J_LFD - w12_J_LFD,
+  J_w12_w36_LFD = w36_J_LFD - w12_J_LFD,
+  J_w12_w48_LFD = w48_J_LFD - w12_J_LFD,
+
+  Ntac_w12_w24_LFD = w24_Ntac_LFD - w12_Ntac_LFD,
+  Ntac_w12_w36_LFD = w36_Ntac_LFD - w12_Ntac_LFD,
+  Ntac_w12_w48_LFD = w48_Ntac_LFD - w12_Ntac_LFD,
+
+  J_w24_w36_LFD  = w36_J_LFD  - w24_J_LFD,
+  J_w24_w48_LFD  = w48_J_LFD  - w24_J_LFD,
+  J_w36_w48_LFD  = w48_J_LFD  - w36_J_LFD,
+
+  Ntac_w24_w36_LFD = w36_Ntac_LFD - w24_Ntac_LFD,
+  Ntac_w24_w48_LFD = w48_Ntac_LFD - w24_Ntac_LFD,
+  Ntac_w36_w48_LFD = w48_Ntac_LFD - w36_Ntac_LFD,
+
+  levels = design_batchcorr
+)
+
+
+fit1_batchcorr <- lmFit(prot_M_renamed_filt_norm_batchcorr, design_batchcorr) 
+fit2_batchcorr <- contrasts.fit(fit1_batchcorr, contrasts_batchcorr) 
+fit2_batchcorr <- eBayes(fit2_batchcorr)
+
+# Use the correct contrast names for main effects
+batchcorr_limma_results_M_main_w12_w24_LFD <- get_limma_results(fit2_batchcorr, "main_w12_w24_LFD", "Male Main effect w12-w24") # Total: 3301 - UP: 1350 | DOWN: 1951
+batchcorr_limma_results_M_main_w12_w36_LFD <- get_limma_results(fit2_batchcorr, "main_w12_w36_LFD", "Male Main effect w12-w36") 
+batchcorr_limma_results_M_main_w12_w48_LFD <- get_limma_results(fit2_batchcorr, "main_w12_w48_LFD", "Male Main effect w12-w48")
+batchcorr_limma_results_M_main_w24_w36_LFD <- get_limma_results(fit2_batchcorr, "main_w24_w36_LFD", "M Main effect w24-w36") # Total: 12 - UP: 2 | DOWN: 10
+batchcorr_limma_results_M_main_w24_w48_LFD <- get_limma_results(fit2_batchcorr, "main_w24_w48_LFD", "M Main effect w24-w48") # Total: 170 - UP: 117 | DOWN: 53
+batchcorr_limma_results_M_main_w36_w48_LFD <- get_limma_results(fit2_batchcorr, "main_w36_w48_LFD", "M Main effect w36-w48") # Total: 180 - UP: 115 | DOWN: 65
+
+#main histogram
+hist(batchcorr_limma_results_M_main_w12_w24$top_table$P.Value, main = "Male Main effect w12-w24", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(batchcorr_limma_results_M_main_w12_w36$top_table$P.Value, main = "Male Main effect w12-w36", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(batchcorr_limma_results_M_main_w12_w48$top_table$P.Value, main = "Male Main effect w12-w48", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(batchcorr_limma_results_M_main_w24_w36$top_table$P.Value, main = "Male Main effect w24-w36", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(batchcorr_limma_results_M_main_w24_w48$top_table$P.Value, main = "Male Main effect w24-w48", xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(batchcorr_limma_results_M_main_w36_w48$top_table$P.Value, main = "Male Main effect w36-w48", xlab = "P-value", col = "darkslategray4", breaks = 30)
+```
+
+
+# Limma: non-batchcorr data
+Add batch variable directly in the design matrix. 
+
+```{r}
+class(metadata_M$weeks)
+levels(metadata_M$weeks)
+
+metadata_M$beatbox_batch <- factor(metadata_M$beatbox_batch)
+metadata_M$weeks <- factor(metadata_M$weeks, levels = c("12", "24", "36", "48"))
+metadata_M$strain<- factor(metadata_M$strain, levels = c("J", "Ntac"))
+metadata_M$diet <- factor(metadata_M$diet, levels = c("LFD", "FFMD"))
+metadata_M$Combined <-with(metadata_M, factor(paste0("w", weeks, "_", strain, "_", diet)))
+
+class(metadata_M$Combined)
+levels(metadata_M$Combined)
+
+design <- model.matrix(~0 + Combined + beatbox_batch, data = metadata_M)
+colnames(design) <- sub("Combined", "", colnames(design))
+
+contrasts <- makeContrasts(
+  # Main effects within LFD (average J & Ntac)
+  main_w12_w24_LFD = ((w24_J_LFD + w24_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+  main_w12_w36_LFD = ((w36_J_LFD + w36_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+  main_w12_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w12_J_LFD + w12_Ntac_LFD)/2),
+  main_w24_w36_LFD = ((w36_J_LFD + w36_Ntac_LFD)/2) - ((w24_J_LFD + w24_Ntac_LFD)/2),
+  main_w24_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w24_J_LFD + w24_Ntac_LFD)/2),
+  main_w36_w48_LFD = ((w48_J_LFD + w48_Ntac_LFD)/2) - ((w36_J_LFD + w36_Ntac_LFD)/2),
+
+  # Main effects within FFMD (average J & Ntac)
+  main_w12_w24_FFMD = ((w24_J_FFMD + w24_Ntac_FFMD)/2) - ((w12_J_FFMD + w12_Ntac_FFMD)/2),
+  main_w12_w36_FFMD = ((w36_J_FFMD + w36_Ntac_FFMD)/2) - ((w12_J_FFMD + w12_Ntac_FFMD)/2),
+  main_w12_w48_FFMD = ((w48_J_FFMD + w48_Ntac_FFMD)/2) - ((w12_J_FFMD + w12_Ntac_FFMD)/2),
+  main_w24_w36_FFMD = ((w36_J_FFMD + w36_Ntac_FFMD)/2) - ((w24_J_FFMD + w24_Ntac_FFMD)/2),
+  main_w24_w48_FFMD = ((w48_J_FFMD + w48_Ntac_FFMD)/2) - ((w24_J_FFMD + w24_Ntac_FFMD)/2),
+  main_w36_w48_FFMD = ((w48_J_FFMD + w48_Ntac_FFMD)/2) - ((w36_J_FFMD + w36_Ntac_FFMD)/2),
+
+  diet_prog_w12_w24 = ((w24_J_FFMD + w24_Ntac_FFMD)/2 - (w12_J_FFMD + w12_Ntac_FFMD)/2) - ((w24_J_LFD  + w24_Ntac_LFD )/2 - (w12_J_LFD  + w12_Ntac_LFD )/2), 
+  diet_prog_w24_w36 =((w36_J_FFMD + w36_Ntac_FFMD)/2 - (w24_J_FFMD + w24_Ntac_FFMD)/2) - ((w36_J_LFD  + w36_Ntac_LFD )/2 - (w24_J_LFD  + w24_Ntac_LFD )/2),
+  levels = design
+)
+
+fit1 <- lmFit(prot_M_renamed_filt_norm, design) 
+fit2 <- contrasts.fit(fit1, contrasts) 
+fit2 <- eBayes(fit2)
+
+# Use the correct contrast names for main effects (FFMD only)
+# Use the correct contrast names for main effects (FFMD only)
+limma_results_M_main_w12_w24_FFMD <- get_limma_results(fit2, "main_w12_w24_FFMD", "Male Main effect (FFMD) w12–w24")
+limma_results_M_main_w12_w36_FFMD <- get_limma_results(fit2, "main_w12_w36_FFMD", "Male Main effect (FFMD) w12–w36")
+limma_results_M_main_w12_w48_FFMD <- get_limma_results(fit2, "main_w12_w48_FFMD", "Male Main effect (FFMD) w12–w48")
+limma_results_M_main_w24_w36_FFMD <- get_limma_results(fit2, "main_w24_w36_FFMD", "M Main effect (FFMD) w24–w36")
+limma_results_M_main_w24_w48_FFMD <- get_limma_results(fit2, "main_w24_w48_FFMD", "M Main effect (FFMD) w24–w48")
+limma_results_M_main_w36_w48_FFMD <- get_limma_results(fit2, "main_w36_w48_FFMD", "M Main effect (FFMD) w36–w48")
+
+limma_results_M_main_w12_w24_LFD <- get_limma_results(fit2, "main_w12_w24_LFD", "Male Main effect (LFD) w12–w24")
+limma_results_M_main_w12_w36_LFD <- get_limma_results(fit2, "main_w12_w36_LFD", "Male Main effect (LFD) w12–w36")
+limma_results_M_main_w12_w48_LFD <- get_limma_results(fit2, "main_w12_w48_LFD", "Male Main effect (LFD) w12–w48")
+limma_results_M_main_w24_w36_LFD <- get_limma_results(fit2, "main_w24_w36_LFD", "Male Main effect (LFD) w24–w36")
+limma_results_M_main_w24_w48_LFD <- get_limma_results(fit2, "main_w24_w48_LFD", "Male Main effect (LFD) w24–w48")
+limma_results_M_main_w36_w48_LFD <- get_limma_results(fit2, "main_w36_w48_LFD", "Male Main effect (LFD) w36–w48")
+
+limma_results_M_diet_prog_w12_w24 <- get_limma_results(fit2, "diet_prog_w12_w24", "Male Main effect (LFD) w36–w48")
+limma_results_M_diet_prog_w24_w36 <- get_limma_results(fit2, "diet_prog_w24_w36", "Male Main effect (LFD) w36–w48")
+
+
+```
+

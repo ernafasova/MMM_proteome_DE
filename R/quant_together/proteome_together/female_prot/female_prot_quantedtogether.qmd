@@ -1,0 +1,704 @@
+---
+title: "female_prot"
+format: html
+---
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+load(here::here("data/metadata.rda"))
+load(here::here("data/df_prot.rda"))
+```
+
+# Functions
+```{r}
+plot_pca <- function(
+  data,
+  color_var,
+  shape_var    = NULL,
+  color_vals   = NULL,   # manual colors
+  shape_vals   = NULL,   # manual shapes
+  palette_name = "Set1",
+  plot_title   = NULL,
+  ellipse      = TRUE
+) {
+  # Treat aesthetics as factors for discrete scales
+  data[[color_var]] <- as.factor(data[[color_var]])
+  if (!is.null(shape_var)) {
+    data[[shape_var]] <- as.factor(data[[shape_var]])
+  }
+
+  # Aesthetic mappings
+  mapping <- aes(
+    x = PC1,
+    y = PC2,
+    color = .data[[color_var]],
+    text = hover_text
+  )
+  if (!is.null(shape_var)) {
+    mapping <- aes(
+      x = PC1,
+      y = PC2,
+      color = .data[[color_var]],
+      shape = .data[[shape_var]],
+      text = hover_text
+    )
+  }
+
+  # Base plot
+  p <- ggplot(data, mapping) +
+    geom_point(size = 3.5, alpha = 0.7) +
+    labs(
+      title    = plot_title,
+      subtitle = paste("based on", n_nona, "sites out of", n_original),
+      x        = paste0("PC1 (", pca_var_perc[1], "%)"),
+      y        = paste0("PC2 (", pca_var_perc[2], "%)")
+    ) +
+    theme_bw(base_size = 14) +
+    theme(
+      plot.title    = element_text(hjust = 0.5, face = "bold"),
+      plot.subtitle = element_text(hjust = 0.5)
+    )
+
+  # Optional ellipses
+  if (ellipse) {
+    p <- p +
+      stat_ellipse(
+        aes(
+          group = .data[[color_var]],
+          fill  = .data[[color_var]]
+        ),
+        geom        = "path",
+        show.legend = FALSE
+      )
+  }
+
+  # Color scale
+  if (!is.null(color_vals)) {
+    p <- p + scale_color_manual(values = color_vals)
+  } else {
+    p <- p + scale_color_brewer(palette = palette_name)
+  }
+
+  # Shape scale (manual override)
+  if (!is.null(shape_vals)) {
+    p <- p + scale_shape_manual(values = shape_vals)
+  }
+
+  print(p)
+}
+
+
+```
+
+
+# Subgroup female (n=113)
+```{r}
+metadata_F <- metadata %>% 
+  dplyr::filter(sex == "F")
+
+prot_female <- df_prot[, metadata_F$sample_id] # 113 samples
+
+print(metadata_F$sample_id)
+print(colnames(prot_female))
+
+all(colnames(prot_female) == metadata_F$sample_id) # TRUE
+dim(prot_female) # 8115 proteins, 112 samples
+
+# new sample_id
+metadata_F <- metadata_F %>%
+  dplyr::mutate(new_sample_id = paste0("S", seq_len(n())))
+
+# 2) Rename columns in prot_female using the new IDs
+colnames(prot_female) <- metadata_F$new_sample_id
+head(colnames(prot_female))
+
+metadata_F <- metadata_F %>%
+  dplyr::mutate(group = paste(diet, strain, sep = "_"))
+
+table(metadata_F$diet)   # FFMD-73, LFD-40
+table(metadata_F$strain) # J-55, Ntac =58
+table(metadata_F$group)  # FFMD_J = 35, FFMD_Ntac = 38, LFD_J = 20, LFD_Ntac = 20
+
+usethis::use_data(prot_female, overwrite = TRUE)
+usethis::use_data(metadata_F, overwrite = TRUE)
+```
+# Missing values
+```{r}
+dim(prot_female) # 8115-113
+sum(is.na(prot_female)) # 60588
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(prot_female)) * 1
+
+annotation_col <- metadata_F %>%
+  dplyr::select(new_sample_id, diet, strain, weeks) %>%
+  tibble::column_to_rownames(var = "new_sample_id")
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_female <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,             # Hide sample IDs
+  color = c("gray95", "black"),      # 0 = Present, 1 = Missing
+  legend_breaks = c(0, 1),
+  legend_labels = c("Present", "Missing"),
+  main = "Pattern of Missing Values Across Samples (Female)"
+)
+
+ggsave(file.path("doc", "na_heatmap_female.png"),plot   = na_heatmap_female,width  = 7,height = 6,dpi    = 300,bg     = "white")
+
+##################################### valid values
+
+valid_value_counts <- colSums(!is.na(prot_female))
+count_data <- data.frame(column = names(valid_value_counts), count = valid_value_counts)
+
+mean_value <- mean(count_data$count)
+n_samples  <- length(valid_value_counts)
+
+vv1_female <- ggplot(count_data, aes(x = seq_along(column), y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1) +
+  geom_text(
+    aes(
+      x = length(column) * 0.8,
+      y = mean_value,
+      label = paste0("Mean = ", round(mean_value, 0))
+    ),
+    vjust = -0.5, color = "red", size = 4
+  ) +
+  labs(
+    title = paste0("Female (n=", n_samples, ")"),
+    x     = paste0("Samples (S1–S", n_samples, ")"),
+    y     = "Valid Values"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title        = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text.x       = element_blank(),
+    axis.ticks.x      = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+ggsave(file.path("doc", "vv1_female.png"),plot   = vv1_female,width  = 6,height = 3,dpi    = 300,bg     = "white")
+```
+
+
+# PCA
+```{r}
+n_original <- nrow(prot_female) # 8115
+df_nona <- na.omit(prot_female) # 6344
+n_nona <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>New_Sample: ", new_sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F$new_sample_id)
+
+pca_outlier <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Phospho, F, outlier S88 (n=113)",
+    ellipse = FALSE
+)
+
+
+plotly::ggplotly(pca_outlier)
+ggsave(file.path("doc", "pca_outlier.png"), plot = pca_outlier, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+# Density plot outlier
+```{r}
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_female, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot_outlier <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Female outlier S88 (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "none")
+
+density_plot_outlier
+
+ggsave(file.path("doc", "density_plot_outlier.png"), plot = density_plot_outlier, width = 6, height = 4, dpi = 300, bg = "white")
+```
+
+
+# Remove outlier
+```{r}
+prot_female_removeoutlier <- prot_female %>% 
+    dplyr::select(-S88) # 228 samples left
+
+colnames(prot_female_removeoutlier)
+usethis::use_data(prot_female_removeoutlier, overwrite = T)
+
+###
+metadata_F_filtered <- metadata_F %>%
+  filter(new_sample_id != "S88")
+
+print(metadata_F_filtered$new_sample_id)
+print(colnames(prot_female_removeoutlier))
+
+comparison <- data.frame(
+  Metadata = metadata_F_filtered$new_sample_id,
+  Data     = colnames(prot_female_removeoutlier)
+)
+
+all(metadata_F_filtered$new_sample_id == colnames(prot_female_removeoutlier)) # Should be TRUE
+
+usethis::use_data(metadata_F_filtered, overwrite = T)
+```
+
+# Filtering
+```{r}
+prot_female_removeoutlier_filt100 <- PhosR::selectOverallPercent(prot_female_removeoutlier, 1)   # 6354 
+prot_female_removeoutlier_filt70  <- PhosR::selectOverallPercent(prot_female_removeoutlier, 0.7) # 7422 
+prot_female_removeoutlier_filt50    <- PhosR::selectOverallPercent(prot_female_removeoutlier, 0.5) # 7642 
+
+prot_female_removeoutlier_filt <- prot_female_removeoutlier_filt70
+usethis::use_data(prot_female_removeoutlier_filt, overwrite = TRUE)
+```
+
+# Missing values2
+```{r}
+dim(prot_female_removeoutlier_filt) # 7422-112
+sum(is.na(prot_female_removeoutlier_filt)) # 10159
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(prot_female_removeoutlier_filt)) * 1
+
+annotation_col <- metadata_F_filtered %>%
+  dplyr::select(new_sample_id, diet, strain, weeks) %>%
+  tibble::column_to_rownames(var = "new_sample_id")
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_female_filt <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,             # Hide sample IDs
+  color = c("gray95", "black"),      # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),           # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Female, filtered"     # Add a title
+)
+
+ggsave(file.path("doc", "na_heatmap_female_filt.png"),plot = na_heatmap_female_filt, width = 7, height = 6, dpi = 300, bg = "white")
+
+
+valid_value_counts <- colSums(!is.na(prot_female_removeoutlier_filt))
+count_data <- data.frame(column = names(valid_value_counts), count = valid_value_counts)
+
+mean_value <- mean(count_data$count)
+n_samples  <- length(valid_value_counts)
+
+vv2_female <- ggplot(count_data, aes(x = seq_along(column), y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue4") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1) +
+  geom_text(
+    aes(
+      x = length(column) * 0.8,
+      y = mean_value,
+      label = paste0("Mean = ", round(mean_value, 0))
+    ),
+    vjust = -0.5, color = "red", size = 4
+  ) +
+  labs(
+    title = paste0("Female filtered 70% (n=", n_samples, ")"),
+    x     = paste0("Samples (S1–S", n_samples, ")"),
+    y     = "Valid Values"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title        = element_text(face = "bold", hjust = 0.5, size = 16),
+    axis.text.x       = element_blank(),
+    axis.ticks.x      = element_blank(),
+    panel.grid.major.x = element_blank()
+  )
+
+ggsave(file.path("doc", "vv2_female.png"),plot   = vv2_female,width  = 6,height = 4,dpi    = 300,bg     = "white")
+
+```
+
+
+
+# Distribution before norm
+```{r}
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_female_removeoutlier_filt, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot_beforenorm <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Female before norm (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "none")
+
+density_plot_beforenorm
+
+ggsave(file.path("doc", "density_plot_beforenorm.png"), plot = density_plot_beforenorm, width = 6, height = 4, dpi = 300, bg = "white")
+
+
+png(file.path("doc", "boxplot_befornorm.png"), width = 13, height = 6, units = "in", res = 300, bg = "white")
+boxplot(prot_female_removeoutlier_filt,
+        las = 2,                # rotate x-axis labels
+        outline = FALSE,        # hide extreme outliers for clarity
+        col = "lightblue",
+        main = "Female- before normalization",
+        ylab = "Log2 intensity")
+dev.off()
+```
+# PCA1 before norm
+```{r}
+n_original <- nrow(prot_female_removeoutlier_filt) # 7422
+df_nona <- na.omit(prot_female_removeoutlier_filt) 
+n_nona <- nrow(df_nona) # 6586
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>New_sample_id: ", new_sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain,
+      "<br>weeks: ", weeks
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_filtered$new_sample_id)
+
+ 
+pca_day_beforenorm <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Global F, before norm (n =112)",
+    ellipse = FALSE
+)
+
+
+plotly::ggplotly(pca_day_beforenorm)
+
+ggsave(file.path("doc", "pca_day_beforenorm.png"), plot = pca_day_beforenorm, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Normalization
+```{r}
+prot_female_removeoutlier_filt_median <- medianScaling(prot_female_removeoutlier_filt[1:ncol(prot_female_removeoutlier_filt)], scale = TRUE)
+prot_female_removeoutlier_filt_median <- as.data.frame(prot_female_removeoutlier_filt_median)
+
+usethis::use_data(prot_female_removeoutlier_filt_median)
+```
+
+# Distribution after normalization
+```{r}
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_female_removeoutlier_filt_median, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+
+density_plot_afternorm <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Female after norm (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = "none")
+
+
+print(density_plot_afternorm)
+ggsave(file.path("doc", "density_plot_afternorm.png"), plot = density_plot_afternorm, width = 6, height = 4, dpi = 300, bg = "white")
+
+
+png(file.path("doc", "boxplot_afternorm.png"), width = 13, height = 6, units = "in", res = 300, bg = "white")
+boxplot(prot_female_removeoutlier_filt_median,
+        las = 2,                # rotate x-axis labels
+        outline = FALSE,        # hide extreme outliers for clarity
+        col = "lightblue",
+        main = "Female- after normalization",
+        ylab = "Log2 intensity")
+dev.off()
+```
+
+
+# PCA2 after norm
+```{r}
+n_original <- nrow(prot_female_removeoutlier_filt_median) # 7422
+df_nona <- na.omit(prot_female_removeoutlier_filt_median) # 6354
+n_nona <- nrow(df_nona) 
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>New_sample_id: ", new_sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain,
+      "<br>weeks: ", weeks
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_filtered$new_sample_id)
+
+
+ 
+pca_day <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Global, F, median norm (n=112)",
+    ellipse = FALSE
+)
+
+
+pca_beatbox <-plot_pca(
+  data         = pca_data,
+  color_var    = "prep_day_batch",   # fewer groups → better color legibility
+  shape_var    = "beatbox_batch",    # 12 groups → use manual shapes
+  shape_vals   = c(15, 16, 17, 18, 0, 1, 2, 5, 6, 3, 4, 8),
+  palette_name = "Dark2",
+  plot_title   = "Global, F, median norm (n=12)",
+  ellipse      = FALSE
+)
+
+
+pca_diet <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "weeks",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),,
+    plot_title = "Global, F, median norm (n=112)",
+    ellipse = TRUE
+)
+
+
+pca_strain <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),,
+    plot_title = "Global, F, median norm (n=112)",
+    ellipse = TRUE
+)
+
+pca_weeks <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "diet",
+    palette_name = "Dark2",
+    plot_title = "Global, F, median norm (n=112)",
+    ellipse = FALSE
+)
+
+plotly::ggplotly(pca_day)
+plotly::ggplotly(pca_beatbox)
+plotly::ggplotly(pca_diet)
+plotly::ggplotly(pca_strain)
+plotly::ggplotly(pca_weeks)
+
+ggsave(file.path("doc", "pca_day_afternorm.png"), plot = pca_day, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_afternorm.png"), plot = pca_beatbox, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_afternorm.png"), plot = pca_diet, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_afternorm.png"), plot = pca_strain, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_afternorm.png"), plot = pca_weeks, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# BatchCorrection (beatbox)
+```{r}
+prot_female_removeoutlier_filt_median_batchcorr <- limma::removeBatchEffect(prot_female_removeoutlier_filt_median, batch = metadata_F_filtered$beatbox_batch)
+prot_female_removeoutlier_filt_median_batchcorr <- as.data.frame(prot_female_removeoutlier_filt_median_batchcorr)
+usethis::use_data(prot_female_removeoutlier_filt_median_batchcorr, overwrite = TRUE)
+```
+
+# PCA3 after batchcorr 
+```{r}
+n_original <- nrow(prot_female_removeoutlier_filt_median_batchcorr) # 7422
+df_nona <- na.omit(prot_female_removeoutlier_filt_median_batchcorr) # 6354
+n_nona <- nrow(df_nona) 
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_filtered, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "Sample: ", sample_id,
+      "<br>New_sample_id: ", new_sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain,
+      "<br>weeks: ", weeks
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_filtered$new_sample_id)
+
+
+ 
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "Global, F, after batchcorr (n=112)",
+    ellipse = FALSE
+)
+
+
+pca_beatbox_batchcorr <-plot_pca(
+  data         = pca_data,
+  color_var    = "prep_day_batch",   # fewer groups → better color legibility
+  shape_var    = "beatbox_batch",    # 12 groups → use manual shapes
+  shape_vals   = c(15, 16, 17, 18, 0, 1, 2, 5, 6, 3, 4, 8),
+  palette_name = "Dark2",
+  plot_title   = "Global, F, after batchcorr (n=12)",
+  ellipse      = FALSE
+)
+
+
+pca_diet_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "weeks",               # numeric, converted to factor automatically
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "Global, F, after batchcorr (n=112)",
+    ellipse = TRUE
+)
+
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "weeks",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "Global, F, after batchcorr (n=112)",
+    ellipse = TRUE
+)
+
+pca_weeks_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "diet",
+    palette_name = "Dark2",
+    plot_title = "Global, F,after batchcorr (n=112)",
+    ellipse = FALSE
+)
+
+plotly::ggplotly(pca_day_batchcorr)
+plotly::ggplotly(pca_beatbox_batchcorr)
+plotly::ggplotly(pca_diet_batchcorr)
+plotly::ggplotly(pca_strain_batchcorr)
+plotly::ggplotly(pca_weeks_batchcorr)
+
+ggsave(file.path("doc", "pca_day_batchcorr.png"), plot = pca_day_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_batchcorr.png"), plot = pca_beatbox_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_diet_batchcorr.png"), plot = pca_diet_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_strain_batchcorr.png"), plot = pca_strain_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_weeks_batchcorr.png"), plot = pca_weeks_batchcorr, width = 7, height = 5, dpi = 300, bg = "white")
+```
+

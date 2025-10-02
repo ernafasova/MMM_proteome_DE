@@ -179,3 +179,186 @@ get_limma_results <- function(fit_obj, coef_name, contrast_label, alpha = 0.05) 
         down      = down
     ))
 }
+
+
+############################ volcano
+create_volcano_plot <- function(
+        df,
+        label_proteins = NULL,
+        top_n = 10,
+        title = "Volcano Plot",
+        x_label = "Log2 Fold Change",
+        y_label = "-Log10(P-value)"
+) {
+    # Ensure Protein column exists, create it from rownames if it doesn't
+    if (!("Protein" %in% colnames(df))) {
+        df <- tibble::rownames_to_column(df, "Protein")
+    }
+
+    # Assign significance group and create tooltip
+    df <- df %>%
+        dplyr::mutate(
+            SigGroup = dplyr::case_when(
+                adj.P.Val < 0.05 & logFC > 0 ~ "Up",
+                adj.P.Val < 0.05 & logFC < 0 ~ "Down",
+                TRUE ~ "NotSig"
+            ),
+            tooltip = paste(
+                "Protein:", Protein,
+                "<br>logFC:", signif(logFC, 3),
+                "<br>P.Value:", signif(P.Value, 3),
+                "<br>Adj.P.Val:", signif(adj.P.Val, 3)
+            )
+        )
+
+    # Calculate significant counts
+    up_count <- sum(df$SigGroup == "Up", na.rm = TRUE)
+    down_count <- sum(df$SigGroup == "Down", na.rm = TRUE)
+
+    # Select proteins to label
+    if (!is.null(label_proteins)) {
+        label_df <- dplyr::filter(df, Protein %in% label_proteins)
+    } else {
+        top_up <- df %>%
+            dplyr::filter(SigGroup == "Up") %>%
+            dplyr::arrange(P.Value) %>%
+            head(top_n)
+        top_down <- df %>%
+            dplyr::filter(SigGroup == "Down") %>%
+            dplyr::arrange(P.Value) %>%
+            head(top_n)
+        label_df <- dplyr::bind_rows(top_up, top_down)
+    }
+
+    xmax <- max(abs(df$logFC), na.rm = TRUE) * 1.1
+    ymax <- max(-log10(df$P.Value), na.rm = TRUE) * 1.1
+
+    p <- ggplot2::ggplot(df, aes(x = logFC, y = -log10(P.Value), color = SigGroup, text = tooltip)) +
+        geom_point(alpha = 0.4, size = 2, shape = 1) +
+        scale_color_manual(values = c("Up" = "#DC4131", "Down" = "#4390DE", "NotSig" = "grey70")) +
+        ggrepel::geom_label_repel(
+            data = label_df,
+            ggplot2::aes(label = Protein, x = logFC, y = -log10(P.Value)), # Changed label to Protein
+            fill = "white",
+            color = "black",
+            box.padding = 0.5,
+            segment.color = "grey50",
+            size = 3.5,
+            show.legend = FALSE,
+            inherit.aes = FALSE,
+            max.overlaps = Inf
+        ) +
+        labs(title = title, x = x_label, y = y_label) +
+        theme_minimal(base_size = 15) +
+        theme(
+            legend.position = "none",
+            plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
+            panel.border = ggplot2::element_rect(color = "black", fill = NA, size = 1)
+        ) +
+        annotate(
+            "text",
+            x = xmax * 0.95,
+            y = ymax * 0.05,
+            label = paste("Up:", up_count),
+            color = "#DC4131",
+            size = 5,
+            hjust = 1
+        ) +
+        annotate(
+            "text",
+            x = -xmax * 0.95,
+            y = ymax * 0.05,
+            label = paste("Down:", down_count),
+            color = "#4390DE",
+            size = 5,
+            hjust = 0
+        ) +
+        ggplot2::xlim(-xmax, xmax)
+
+    return(p)
+}
+
+#############3
+create_volcano_plot_FC <- function(
+        df,
+        label_proteins = NULL,
+        top_n = 10,
+        logfc_threshold = 1, # <-- New argument for log2 fold change threshold
+        p_value_threshold = 0.05,
+        title = "Volcano Plot",
+        x_label = "Log2 Fold Change",
+        y_label = "-Log10(P-value)"
+) {
+
+    # Ensure Protein column exists, create it from rownames if it doesn't
+    if (!("Protein" %in% colnames(df))) {
+        df <- tibble::rownames_to_column(df, "Protein")
+    }
+
+    # Assign significance group using BOTH p-value and logFC thresholds
+    df <- df %>%
+        dplyr::mutate(
+            SigGroup = dplyr::case_when(
+                adj.P.Val < p_value_threshold & logFC > logfc_threshold  ~ "Up",
+                adj.P.Val < p_value_threshold & logFC < -logfc_threshold ~ "Down",
+                TRUE                                                    ~ "NotSig"
+            ),
+            tooltip = paste(
+                "Protein:", Protein,
+                "<br>logFC:", signif(logFC, 3),
+                "<br>P.Value:", signif(P.Value, 3),
+                "<br>Adj.P.Val:", signif(adj.P.Val, 3)
+            )
+        )
+
+    # Calculate significant counts (this will now be lower)
+    up_count <- sum(df$SigGroup == "Up", na.rm = TRUE)
+    down_count <- sum(df$SigGroup == "Down", na.rm = TRUE)
+
+    # Select proteins to label
+    if (!is.null(label_proteins)) {
+        label_df <- dplyr::filter(df, Protein %in% label_proteins)
+    } else {
+        top_up <- df %>% dplyr::filter(SigGroup == "Up") %>% dplyr::arrange(P.Value) %>% head(top_n)
+        top_down <- df %>% dplyr::filter(SigGroup == "Down") %>% dplyr::arrange(P.Value) %>% head(top_n)
+        label_df <- dplyr::bind_rows(top_up, top_down)
+    }
+
+    # Dynamically set plot limits
+    xmax <- max(abs(df$logFC), na.rm = TRUE) * 1.1
+    ymax <- max(-log10(df$P.Value), na.rm = TRUE) * 1.1
+
+    p <- ggplot2::ggplot(df, aes(x = logFC, y = -log10(P.Value), color = SigGroup, text = tooltip)) +
+        # Add lines for thresholds
+        geom_vline(xintercept = c(-logfc_threshold, logfc_threshold), linetype = "dashed", color = "grey50") +
+        geom_hline(yintercept = -log10(p_value_threshold), linetype = "dashed", color = "grey50") +
+
+        geom_point(alpha = 0.4, size = 2, shape = 1) +
+        scale_color_manual(values = c("Up" = "#DC4131", "Down" = "#4390DE", "NotSig" = "grey70")) +
+        ggrepel::geom_label_repel(
+            data = label_df,
+            ggplot2::aes(label = Protein, x = logFC, y = -log10(P.Value)),
+            fill = "white", color = "black",
+            box.padding = 0.5, segment.color = "grey50",
+            size = 3.5, show.legend = FALSE,
+            inherit.aes = FALSE, max.overlaps = Inf
+        ) +
+        labs(title = title, x = x_label, y = y_label) +
+        theme_minimal(base_size = 15) +
+        theme(
+            legend.position = "none",
+            plot.title = ggplot2::element_text(hjust = 0.5, face = "bold"),
+            panel.border = ggplot2::element_rect(color = "black", fill = NA, size = 1)
+        ) +
+        annotate(
+            "text", x = xmax * 0.95, y = ymax * 0.05, label = paste("Up:", up_count),
+            color = "#DC4131", size = 5, hjust = 1
+        ) +
+        annotate(
+            "text", x = -xmax * 0.95, y = ymax * 0.05, label = paste("Down:", down_count),
+            color = "#4390DE", size = 5, hjust = 0
+        ) +
+        ggplot2::xlim(-xmax, xmax)
+
+    return(p)
+}

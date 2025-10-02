@@ -121,6 +121,8 @@ df_M12_Ntac <- df_M12[, metadata_M12_Ntac$new_sample_id]
 dim(df_M12_Ntac) # 18 samples
 all(colnames(df_M12_Ntac) == metadata_M12_Ntac$new_sample_id)  # Should be TRUE
 ```
+
+
 # Correlation
 ```{r}
 all(colnames(df_M12) == metadata_M12$new_sample_id) 
@@ -493,6 +495,8 @@ pca_diet_M12_Ntac <- plot_pca(
 ggsave(file.path("doc", "pca_diet_M12_Ntac.png"), plot = pca_diet_M12_Ntac,
        width = 6, height = 5, dpi = 300, bg = "white") 
 ```
+
+
 
 ## Euler for diet
 ```{r}

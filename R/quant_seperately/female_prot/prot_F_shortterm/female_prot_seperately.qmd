@@ -1,0 +1,1214 @@
+---
+title: "female_prot"
+format: html
+---
+
+
+
+# Load dependencies
+```{r setup}
+#| message: false
+#| warning: false
+
+source(here::here("R/library.R"))
+source(here::here("R/functions.R"))
+source(here::here("R/metadata.R"))
+load(here::here("data/prot_F_renamed_shortterm.rda"))
+load(here::here("data/metadata_F_shortterm.rda"))
+load(here::here("data/prot_F_renamed_shortterm_filt.rda"))
+load(here::here("data/prot_F_renamed_shortterm_filt_norm.rda"))
+
+```
+
+
+# Load raw data 
+```{r}
+raw_prot_F <- readr::read_tsv(here::here("data-raw/20250908_143350_MMM_prot_female_Report.tsv"))
+metadata_F <- metadata %>% filter(sex == "F") # 113 samples
+
+usethis::use_data(raw_prot_F, metadata_F, overwrite = T)
+```
+
+## Modify raw data
+```{r}
+## Modify raw data
+duplicate_genes <- raw_prot_F %>% 
+  dplyr::count(PG.Genes) %>% 
+  dplyr::filter(n > 1)
+
+raw_prot_duplicates <- raw_prot_F %>%
+  dplyr::filter(
+    PG.Genes %in% duplicate_genes$PG.Genes,
+    !is.na(PG.Genes) # remove NA
+  )
+
+# fix duplicated genes
+raw_prot_F_genefixed <- raw_prot_F %>%
+  dplyr::mutate(
+    PG.Genes = dplyr::if_else(
+      is.na(PG.Genes) | PG.Genes == "" | duplicated(PG.Genes) | duplicated(PG.Genes, fromLast = TRUE),
+      true  = PG.ProteinGroups,
+      false = PG.Genes
+    )
+  )
+
+any(duplicated(raw_prot_F_genefixed$PG.Genes)) # False
+any(is.na(raw_prot_F_genefixed$PG.Genes))      # check for NA
+any(is.nan(raw_prot_F_genefixed$PG.Genes))     # check for NaN
+any(raw_prot_F_genefixed$PG.Genes == "")       # check for empty rows
+
+# create quantitative df
+prot_F <- raw_prot_F_genefixed %>% 
+  dplyr::select(PG.Genes, dplyr::contains("2024")) %>% 
+  tibble::column_to_rownames(var = "PG.Genes") %>% 
+  dplyr::mutate(across(everything(), as.numeric)) %>% 
+  dplyr::mutate(across(everything(), ~ replace(., is.nan(.), NA))) %>%
+  dplyr::mutate(across(everything(), log2))
+
+#colnames(prot_F)
+
+prot_F_renamed <- prot_F %>%
+  dplyr::rename_with(~ sub(".*_(S[0-9]+)_.*", "\\1", .)) %>% 
+  dplyr::rename_with(~ gsub("^S", "s", .))
+colnames(prot_F_renamed)
+
+setequal(colnames(prot_F_renamed), metadata_F$sample_id)      # regardless of order 
+all(colnames(prot_F_renamed) == metadata_F$sample_id)         # checks the order
+```
+
+## Align with metadata
+```{r}
+## Align with metadata (F)
+print(metadata_F$sample_id)
+print(colnames(prot_F_renamed))
+
+setdiff(metadata_F$sample_id, colnames(prot_F_renamed))  # should be character(0)
+prot_F_renamed <- prot_F_renamed %>% dplyr::select(dplyr::all_of(metadata_F$sample_id))
+
+all(colnames(prot_F_renamed) == metadata_F$sample_id)  # checks the order
+
+# Compare metadata sample IDs with data column names
+comparison_F <- data.frame(
+  Metadata = metadata_F$sample_id,
+  Data     = colnames(prot_F_renamed)
+)
+print(comparison_F)
+usethis::use_data(prot_F_renamed, overwrite = TRUE)
+```
+
+
+# Missing values
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(prot_F_renamed))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv_female <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Proteins per sample, female all (n=113)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+
+print(vv_male)
+ggsave(file.path("doc", "vv_female_prot.png"), plot = vv_female, width = 14, height = 3, dpi = 300, bg = "white")
+
+
+###
+# Limma: batchcorr data (F)
+metadata_F_shortterm <- metadata_F_shortterm %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac")), 
+    weeks = factor(weeks, levels =c("12", "24", "36", "48"))
+  )
+
+
+dim(prot_F_renamed) # 7565 - 116 samples
+sum(is.na(prot_F_renamed)) # 32852
+
+# 1. Prepare the binary NA matrix (0 = present, 1 = missing)
+missing_matrix <- as.matrix(is.na(prot_F_renamed)) * 1
+
+annotation_col <- metadata_F %>%
+  dplyr::select(sample_id, diet, strain, weeks) %>%
+  tibble::column_to_rownames(var = "sample_id")
+
+# alignment check
+stopifnot(all(colnames(missing_matrix) == rownames(annotation_col))) # will error if not aligned
+
+# --- Step 4: Generate the Final Heatmap ---
+na_heatmap_female <- pheatmap(
+  missing_matrix,                    # The 0/1 data matrix
+  annotation_col = annotation_col,   # The annotation data frame with correct rownames
+  cluster_rows = FALSE,              # Don't cluster thousands of genes, it's slow and uninformative
+  cluster_cols = TRUE,               # Cluster samples to see which are similar in missingness
+  show_rownames = FALSE,             # Don't show the gene names, there are too many
+  show_colnames = FALSE,              # Hide sample IDs
+  color = c("gray95", "black"),       # Use two distinct colors for Present (0) and Missing (1)
+  legend_breaks = c(0, 1),            # Specify breaks for the legend
+  legend_labels = c("Present", "Missing"), # Label the legend clearly
+  main = "Female, all (n=113)"  # Add a title
+)
+
+ggsave(file.path("doc", "na_heatmap_female.png"),plot = na_heatmap_female, width = 7, height = 6, dpi = 300, bg = "white")
+```
+# PCA
+```{r}
+prot_F_renamed_outlierremoved <- prot_F_renamed %>% dplyr::select(-s171) # 228 samples left
+metadata_F_outlierremoved <- metadata_F %>% filter(sample_id != "s171")
+
+# PCA1 - checking outliers (F)
+n_original <- nrow(prot_F_renamed_outlierremoved)
+df_nona    <- na.omit(prot_F_renamed_outlierremoved)
+n_nona     <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var       <- pca_nona$sdev^2 
+pca_var_perc  <- round(pca_var / sum(pca_var) * 100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("sample_id")
+
+pca_data <- pca_results %>%
+  dplyr::select(sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F, by = "sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$sample_id %in% metadata_F$sample_id)
+
+pca_day <- plot_pca(
+  data = pca_data,
+  color_var = "diet",
+  shape_var = "weeks",
+  palette_name = "Set1",
+  plot_title = "global, F, 12week (n=36)",
+  ellipse = FALSE
+)
+
+pca_weeks <- plot_pca(
+    data = pca_data,
+    color_var = "weeks",
+    shape_var = "diet",
+    palette_name = "Dark2",
+    plot_title = "global, F, all (n=113)",
+    ellipse = FALSE
+)
+
+
+plotly::ggplotly(pca_weeks)
+ggsave(file.path("doc", "pca_day_beforenorm_Fshort.png"),    plot = pca_day,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_beforenorm_Fshort.png"), plot = pca_beatbox, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Dynamic range
+```{r}
+# use waq-values (non log2)
+prot_F_renamed_nonlog2 <- 2^prot_F_renamed
+
+# add ranking and median values
+abundance_data <- prot_F_renamed_nonlog2 %>%
+  rownames_to_column("proteins") %>%
+  mutate(median = rowMedians(as.matrix(dplyr::select(., -proteins)), na.rm = TRUE)) %>%
+  arrange(desc(median)) %>%
+  mutate(rank = row_number())
+
+# prep proteins for labeling
+N <- 10
+top_proteins <- abundance_data$proteins[1:N]
+bottom_proteins <- abundance_data$proteins[(nrow(abundance_data)-N+1):nrow(abundance_data)]
+custom_proteins <- c("Akt1", "Akt2", "Akt1s1", "Gsk3a", "Gsk3b", "Irs1", "Irs2", "Insr", "Cps1", "Gpt", "Gpt2", "Adh1", "Alb") 
+
+abundance_data <- abundance_data %>%
+  mutate(
+    Category = case_when(
+      proteins %in% custom_proteins  ~ "Custom highlight",
+      proteins %in% top_proteins     ~ "Most abundant",
+      proteins %in% bottom_proteins  ~ "Least abundant",
+      TRUE                           ~ "Other"
+    )
+  )
+
+highlighted <- abundance_data %>% filter(Category != "Other")
+
+abundance_plot_F <- ggplot(abundance_data, aes(x = rank, y = log10(median))) +
+  geom_point(
+    aes(color = Category),
+    size = 1,
+    alpha = 0.7,
+    show.legend = FALSE
+  ) +
+  geom_point(
+    data = highlighted,
+    aes(x = rank, y = log10(median), color = Category),
+    size = 3
+  ) +
+  geom_label_repel(
+    data = highlighted,
+    aes(x = rank, y = log10(median), label = proteins, fill = Category),
+    color = "black",
+    size = 5,
+    max.overlaps = 25,
+    nudge_y = 0.1,
+    box.padding = 0.5,
+    show.legend = FALSE
+  ) +
+  scale_color_manual(
+    values = c(
+      "Most abundant"    = "#E69F00",
+      "Least abundant"   = "#56B4E9",
+      "Custom highlight" = "#D55E00",
+      "Other"            = "gray60"
+    )
+  ) +
+  scale_fill_manual(
+    values = c(
+      "Most abundant"    = "#FFE5B4",
+      "Least abundant"   = "#CFE2F3",
+      "Custom highlight" = "#F7CAC9"
+    )
+  ) +
+  labs(
+    title = "Protein Abundance, F",
+    x = "protein abundance rank",
+    y = "Median intensity (log10)"
+  ) +
+  theme_minimal(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    legend.position = "none"
+  )
+
+print(abundance_plot_F)
+ggsave(file.path("doc", "abundance_plot_F.png"),plot = abundance_plot_F,width = 6,height = 7,dpi = 300,bg = "white")
+
+```
+
+# Subgroup data into shortterm and longterm
+```{r}
+metadata_F_shortterm <- metadata %>% filter(sex == "F", weeks == "12") # 35 samples
+metadata_F_longterm <- metadata %>% filter(sex == "F", diet == "FFMD", weeks %in% c(24, 36, 48)) # 50 samples
+
+# create new_sample_id column in each metadata
+metadata_F_shortterm <- metadata_F_shortterm %>% mutate(new_sample_id = paste0("S", row_number()))
+metadata_F_longterm <- metadata_F_longterm %>% mutate(new_sample_id = paste0("S", row_number()))
+
+# Shortterm
+prot_F_renamed_shortterm <- prot_F_renamed[, metadata_F_shortterm$sample_id]
+colnames(prot_F_renamed_shortterm) <- setNames(
+  metadata_F_shortterm$new_sample_id,
+  metadata_F_shortterm$sample_id
+)[colnames(prot_F_renamed_shortterm)]
+
+# Longterm
+prot_F_renamed_longterm <- prot_F_renamed[, metadata_F_longterm$sample_id]
+colnames(prot_F_renamed_longterm) <- setNames(
+  metadata_F_longterm$new_sample_id,
+  metadata_F_longterm$sample_id
+)[colnames(prot_F_renamed_longterm)]
+
+# Verify
+all(colnames(prot_F_renamed_shortterm) == metadata_F_shortterm$new_sample_id)
+all(colnames(prot_F_renamed_longterm)  == metadata_F_longterm$new_sample_id)
+
+# Save
+usethis::use_data(prot_F_renamed_shortterm, overwrite = TRUE)
+usethis::use_data(prot_F_renamed_longterm,  overwrite = TRUE)
+
+
+usethis::use_data(raw_prot_F, metadata_F, metadata_F_shortterm, metadata_F_longterm, overwrite = T)
+```
+
+# Female-shortterm study
+only 12 weeks, diet effect
+data is prot_F_renamed_shortterm
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(prot_F_renamed_shortterm))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv1 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Proteins per sample, F-12weeks (n=35)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+print(vv1)
+ggsave(file.path("doc", "vv1_F_prot_shortterm.png"), plot = vv1, width = 7, height = 3, dpi = 300, bg = "white")
+
+```
+
+## Distribution
+```{r}
+## Distribution (F)
+# Now, create the plot and save it
+png(filename = "doc/boxplot_prot_F_shortterm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_shortterm, 
+        main = "F 12weeks (n=35)",
+        ylab = "Log2 Intensity", 
+        col = "lightblue")
+
+dev.off()
+
+##########
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_F_renamed_shortterm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+density_plot_global <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, F_12w (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot_global
+ggsave(file.path("doc", "densityplot_F_prot_shortterm.png"), plot = density_plot_global, width = 7, height = 4, dpi = 300, bg = "white")
+
+```
+
+# PCA1 - checking outliers
+```{r}
+# PCA1 - checking outliers (F)
+n_original <- nrow(prot_F_renamed_shortterm)
+df_nona    <- na.omit(prot_F_renamed_shortterm)
+n_nona     <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var       <- pca_nona$sdev^2 
+pca_var_perc  <- round(pca_var / sum(pca_var) * 100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_shortterm$new_sample_id)
+
+pca_day <- plot_pca(
+  data = pca_data,
+  color_var = "prep_day_batch",
+  shape_var = "diet",
+  palette_name = "Set1",
+  plot_title = "global, F, 12week (n=36)",
+  ellipse = FALSE
+)
+
+pca_beatbox <- plot_pca(
+  data = pca_data,
+  color_var = "prep_day_batch",
+  shape_var = "beatbox_batch",
+  shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+  palette_name = "Set1",
+  plot_title = "global, F, 12week (n=36)",
+  ellipse = FALSE
+)
+
+plotly::ggplotly(pca_beatbox)
+plotly::ggplotly(pca_day)
+
+ggsave(file.path("doc", "pca_day_beforenorm_Fshort.png"),    plot = pca_day,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_beatbox_beforenorm_Fshort.png"), plot = pca_beatbox, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+# Filter
+```{r}
+# Filter
+#Filter on total matrix
+prot_F_renamed_shortterm_filt100 <- PhosR::selectOverallPercent(prot_F_renamed_shortterm, 1)   # 6642
+prot_F_renamed_shortterm_filt70  <- PhosR::selectOverallPercent(prot_F_renamed_shortterm, 0.7) # 7483
+prot_F_renamed_shortterm_filt50  <- PhosR::selectOverallPercent(prot_F_renamed_shortterm, 0.5) # 7650
+
+prot_F_renamed_shortterm_filt <- prot_F_renamed_shortterm_filt70
+usethis::use_data(prot_F_renamed_shortterm_filt, overwrite = TRUE)
+
+```
+
+## Filter2: groupwise
+```{r}
+## Filter 2: groupwise (F)
+min_completeness_per_group <- 0.7
+groups <- paste(metadata_F_shortterm$diet, metadata_F_shortterm$strain, sep = "_")
+unique_groups <- unique(groups)
+
+# Print the groups to verify
+print("Experimental groups identified:")
+print(table(groups))
+
+proteins_to_keep <- apply(prot_F_renamed_shortterm, 1, function(protein_row) {
+  completeness_in_each_group <- sapply(unique_groups, function(group_level) {
+    cols_in_group <- which(groups == group_level)
+    protein_in_group <- protein_row[cols_in_group]
+    completeness <- sum(!is.na(protein_in_group)) / length(protein_in_group)
+    return(completeness)
+  })
+  # Keep it if ANY group met the threshold
+  return(any(completeness_in_each_group >= min_completeness_per_group))
+})
+
+prot_F_renamed_shortterm_filt_groupwise70 <- prot_F_renamed_shortterm[proteins_to_keep, ]
+
+min_completeness_per_group <- 0.7
+
+# 1. DEFINE THE GROUPS (diet only)
+groups <- metadata_F_shortterm$diet
+unique_groups <- unique(groups)
+
+# 2. CORE LOGIC: keep proteins that pass the threshold in ALL groups
+proteins_to_keep_strict <- apply(prot_F_renamed_shortterm, 1, function(protein_row) {
+  completeness_in_each_group <- sapply(unique_groups, function(group_level) {
+    cols_in_group <- which(groups == group_level)
+    protein_in_group <- protein_row[cols_in_group]
+    completeness <- sum(!is.na(protein_in_group)) / length(protein_in_group)
+    return(completeness)
+  })
+  return(all(completeness_in_each_group >= min_completeness_per_group))
+})
+
+# 3. APPLY THE STRICT FILTER
+prot_F_renamed_shortterm_filt_strict70 <- prot_F_renamed_shortterm[proteins_to_keep_strict, ]
+
+# 4. VERIFY AND COMPARE THE RESULT
+cat("Original dimensions:", dim(prot_F_renamed_shortterm), "\n")
+cat("Dimensions after 'at least one group' filtering:", dim(prot_F_renamed_shortterm_filt_groupwise70), "\n")
+cat("Dimensions after 'IN EVERY GROUP' filtering (strict):", dim(prot_F_renamed_shortterm_filt_strict70), "\n")
+
+num_lost <- nrow(prot_F_renamed_shortterm_filt_groupwise70) - nrow(prot_F_renamed_shortterm_filt_strict70)
+cat("\nSwitching to the strict filter removed an additional", num_lost, "proteins.\n")
+cat("These are the proteins present in one group but not consistently in the other.\n")
+
+```
+
+# valid values2
+```{r}
+# valid values
+valid_counts <- colSums(!is.na(prot_F_renamed_shortterm_filt))
+count_data <- data.frame(column = names(valid_counts), count = valid_counts)
+count_data$column <- factor(count_data$column, levels = count_data$column)
+
+
+mean_value <- mean(count_data$count)
+y_max <- max(count_data$count)
+y_buffer <- max(20, 0.05 * y_max)
+y_limit <- y_max + y_buffer
+
+vv2 <- ggplot(count_data, aes(x = column, y = count)) +
+  geom_bar(stat = "identity", fill = "lightblue") +
+  geom_hline(yintercept = mean_value, color = "red", linetype = "dashed", size = 1, alpha = 0.3) +
+  annotate("text", x = length(count_data$column) / 2 + 0.5, 
+           y = mean_value + y_buffer / 2,
+           label = paste0("Mean = ", round(mean_value, 0)),
+           color = "red", size = 5, fontface = "bold") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.1)), limits = c(0, y_limit)) +
+  labs(
+    title = "Proteins per sample, female-12weeks (n=35)",
+    x = "",
+    y = "Valid Values") +
+  theme_minimal(base_size = 14) +
+  theme(plot.title   = element_text(face = "bold", hjust = 0.5, size = 13),
+        axis.text.x  = element_text(angle = 45, hjust = 1, vjust = 1, size = 8, color = "black"),
+        axis.text.y  = element_text(size = 12, color = "black"),
+        axis.title.x = element_text(size = 14, color = "black"),
+        axis.title.y = element_text(size = 14, color = "black"),
+        panel.grid.major.x = element_blank())
+
+
+print(vv2)
+ggsave(file.path("doc", "vv2_female_prot_shortterm.png"), plot = vv2, width = 7, height = 3, dpi = 300, bg = "white")
+```
+
+# Normalize
+```{r}
+# from PhosR package
+prot_F_renamed_shortterm_filt_norm <- medianScaling(prot_F_renamed_shortterm_filt[1:ncol(prot_F_renamed_shortterm_filt)], scale = TRUE)
+prot_F_renamed_shortterm_filt_norm <- as.data.frame(prot_F_renamed_shortterm_filt_norm)
+
+usethis::use_data(prot_F_renamed_shortterm_filt_norm, overwrite = TRUE)
+```
+## Distribution
+```{r}
+## Distribution 
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_shortterm_filt_norm, 
+        main = "F 12weeks (n=36)",
+        ylab = "Log2 Intensity",
+        col = "lightblue")
+
+# Now, create the plot and save it
+png(filename = "doc/boxplot_prot_F_renamed_shortterm_filt_norm.png",
+    width    = 10,
+    height   = 6,
+    units    = "in",
+    res      = 300)
+
+# 1. Draw the boxplot as before
+boxplot(prot_F_renamed_shortterm_filt_norm, 
+        main = "F 12weeks (n=36)",
+        ylab = "Log2 Intensity",
+        col = "lightblue")
+
+dev.off()
+
+####
+# Convert data to long format
+df_long <- tidyr::pivot_longer(prot_F_renamed_shortterm_filt_norm, 
+                               cols = everything(), 
+                               names_to = "sample_id", 
+                               values_to = "intensity")
+
+density_plot_global <- ggplot(df_long, aes(x = intensity, color = sample_id)) +
+  geom_density() +
+  labs(title = "Density Distribution, F_12w (global)", x = "Intensity", y = "Density") +
+  theme_minimal(base_size = 14) +
+  theme(
+      plot.title = element_text(hjust = 0.5, face = "bold", size = 13),
+      legend.position = "none")
+
+density_plot_global
+ggsave(file.path("doc", "densityplot_prot_F_shortterm_norm.png"),
+       plot = density_plot_global, width = 7, height = 4, dpi = 300, bg = "white")
+
+```
+
+# PCA2
+```{r}
+# PCA1 - checking outliers (F, n=35)
+n_original <- nrow(prot_F_renamed_shortterm_filt_norm) # 7483
+df_nona    <- na.omit(prot_F_renamed_shortterm_filt_norm)
+n_nona     <- nrow(df_nona) # 6642
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var      <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var / sum(pca_var) * 100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_shortterm$new_sample_id)
+
+pca_day_norm <- plot_pca(
+  data = pca_data,
+  color_var = "prep_day_batch",
+  shape_var = "diet",
+  palette_name = "Set1",
+  plot_title = "global, F, 12week (n=35)",
+  ellipse = TRUE
+)
+
+pca_beatbox_norm <- plot_pca(
+  data = pca_data,
+  color_var = "prep_day_batch",
+  shape_var = "beatbox_batch",
+  shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+  palette_name = "Set1",
+  plot_title = "global, F, 12week (n=35)",
+  ellipse = FALSE
+)
+
+pca_diet_norm <- plot_pca(
+  data = pca_data,
+  color_var = "diet",
+  shape_var = "strain",
+  color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+  plot_title = "global, F, 12week (n=35)",
+  ellipse = TRUE
+)
+
+pca_strain_norm <- plot_pca(
+  data = pca_data,
+  color_var = "strain",
+  shape_var = "diet",
+  color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+  plot_title = "global, F, 12week (n=35)",
+  ellipse = TRUE
+)
+
+#####################
+pca_strain_norm_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "global, F, 12week (n=35)",
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_norm_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "global, F, 12week (n=35)",
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_norm_pc23)
+print(pca_strain_norm_pc13)
+plotly::ggplotly(pca_beatbox_norm)
+plotly::ggplotly(pca_day_norm)
+
+ggsave(file.path("doc", "pca_Fshort_day_norm.png"),       plot = pca_day_norm,      width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_beatbox_norm.png"),   plot = pca_beatbox_norm,  width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_diet_norm.png"),      plot = pca_diet_norm,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain_norm.png"),    plot = pca_strain_norm,   width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain23_norm.png"),  plot = pca_strain_norm_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain13_norm.png"),  plot = pca_strain_norm_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+```
+
+
+# Batchcorr
+```{r}
+# Batchcorr (F)
+setequal(colnames(prot_F_renamed_shortterm_filt_norm), metadata_F_shortterm$new_sample_id) # TRUE
+all(colnames(prot_F_renamed_shortterm_filt_norm) == metadata_F_shortterm$new_sample_id)    # TRUE
+
+prot_F_renamed_shortterm_filt_norm_batchcorr <- limma::removeBatchEffect(
+  prot_F_renamed_shortterm_filt_norm,
+  batch = metadata_F_shortterm$beatbox_batch
+)
+prot_F_renamed_shortterm_filt_norm_batchcorr <- as.data.frame(prot_F_renamed_shortterm_filt_norm_batchcorr)
+usethis::use_data(prot_F_renamed_shortterm_filt_norm_batchcorr, overwrite = TRUE)
+
+```
+# PCA3
+```{r}
+# PCA after batch correction (F, n=35)
+n_original <- nrow(prot_F_renamed_shortterm_filt_norm_batchcorr)
+df_nona    <- na.omit(prot_F_renamed_shortterm_filt_norm_batchcorr)
+n_nona     <- nrow(df_nona)
+
+# transpose data 
+pca_nona <- prcomp(t(df_nona), scale = TRUE)
+# quick scatter plot
+factoextra::fviz_pca_ind(pca_nona) 
+plot(pca_nona$x[,1], pca_nona$x[,2])
+
+# Eigenvalues (variance explained by each PC)
+pca_var <- pca_nona$sdev^2 
+pca_var_perc <- round(pca_var/sum(pca_var)*100, digits = 1)
+fviz_eig(pca_nona, addlabels = TRUE)  # scree plot 
+
+pca_results <- as.data.frame(pca_nona$x) %>%
+  tibble::rownames_to_column("new_sample_id")  # keep sample IDs
+
+pca_data <- pca_results %>%
+  dplyr::select(new_sample_id, PC1, PC2, PC3, PC4) %>% 
+  dplyr::inner_join(metadata_F_shortterm, by = "new_sample_id") %>%
+  dplyr::mutate(
+    hover_text = paste0(
+      "new_sample_id: ", new_sample_id,
+      "<br>Sample: ", sample_id,
+      "<br>Diet: ", diet,
+      "<br>Strain: ", strain
+    )
+  )
+
+# Should be all TRUE / empty set
+all(pca_results$new_sample_id %in% metadata_F_shortterm$new_sample_id)
+
+pca_day_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "diet",
+    palette_name = "Set1",
+    plot_title = "batchcorr: global, F, 12week (n=35)",
+    ellipse = TRUE
+)
+
+pca_beatbox_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "prep_day_batch",
+    shape_var = "beatbox_batch",
+    shape_vals = c(16,17,15,3,7,8,1,2,0,4,5,6),
+    palette_name = "Set1",
+    plot_title = "batchcorr:global, F, 12week (n=35)",
+    ellipse = FALSE
+)
+
+pca_diet_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "diet",
+    shape_var = "strain",
+    color_vals = c("LFD" = "#21908CFF", "FFMD" = "#D55E00"),
+    plot_title = "batchcorr:global, F, 12week (n=35)",
+    ellipse = TRUE
+)
+
+pca_strain_batchcorr <- plot_pca(
+    data = pca_data,
+    color_var = "strain",
+    shape_var = "diet",
+    color_vals = c("Ntac" = "#AA3377", "J" = "#CCBB44"),
+    plot_title = "batchcorr:global, F, 12week (n=35)",
+    ellipse = TRUE
+)
+
+#####################
+pca_strain_batchcorr_pc23 <- ggplot(pca_data, aes(x = PC2, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "batchcorr: global, F, 12week (n=35)",
+    x = paste0("PC2 (", pca_var_perc[2], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+pca_strain_batchcorr_pc13 <- ggplot(pca_data, aes(x = PC1, y = PC3, color = strain, shape = diet, text = hover_text)) +
+  geom_point(size = 3.5, alpha = 0.7) +
+  stat_ellipse(aes(group = strain, fill = strain), geom = "path", show.legend = FALSE) +
+  scale_color_manual(values = c("Ntac" = "#AA3377", "J" = "#CCBB44" )) +
+  labs(
+    title = "batchcorr: global, F, 12week (n=35)",
+    x = paste0("PC1 (", pca_var_perc[1], "%)"),
+    y = paste0("PC3 (", pca_var_perc[3], "%)")
+  ) +
+  theme_bw(base_size = 14) +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5)
+  )
+
+print(pca_strain_batchcorr_pc23)
+print(pca_strain_batchcorr_pc13)
+
+ggsave(file.path("doc", "pca_Fshort_day_norm_batchcorr.png"),       plot = pca_day_batchcorr,      width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_beatbox_norm_batchcorr.png"),   plot = pca_beatbox_batchcorr,  width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_diet_norm_batchcorr.png"),      plot = pca_diet_batchcorr,     width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain_norm_batchcorr.png"),    plot = pca_strain_batchcorr,   width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain23_norm_batchcorr.png"),  plot = pca_strain_batchcorr_pc23, width = 7, height = 5, dpi = 300, bg = "white")
+ggsave(file.path("doc", "pca_Fshort_strain13_norm_batchcorr.png"),  plot = pca_strain_batchcorr_pc13, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+
+# Limma: batchcorr data
+```{r}
+# Limma: batchcorr data (F)
+metadata_F_shortterm <- metadata_F_shortterm %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac"))
+  )
+
+levels(metadata_F_shortterm$diet)
+levels(metadata_F_shortterm$strain)
+
+table(metadata_F_shortterm$diet)   # LFD-12, FFMD-24
+table(metadata_F_shortterm$strain) # J-18, Ntac-18
+
+# create design matrix
+design_matrix_batchcorr <- model.matrix(~ diet + strain, data = metadata_F_shortterm)
+
+colnames(design_matrix_batchcorr)
+fit_batchcorr  <- limma::lmFit(prot_F_renamed_shortterm_filt_norm_batchcorr, design_matrix_batchcorr)
+fit2_batchcorr <- limma::eBayes(fit_batchcorr)
+
+# use get_limma_results function
+limma_results_F_shortterm_diet_batchcorr   <- get_limma_results(fit2_batchcorr, "dietFFMD",   "F12: Diet")   # Total: 1779 - UP: 950 | DOWN: 829
+limma_results_F_shortterm_strain_batchcorr <- get_limma_results(fit2_batchcorr, "strainNtac", "F12: Strain") # Total 5 - UP: 4 | DOWN: 1
+
+# Diet histogram
+hist(limma_results_F_shortterm_diet_batchcorr$top_table$P.Value,   main = "F12: Diet main effect (batchcorr)",   xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_F_shortterm_strain_batchcorr$top_table$P.Value, main = "F12: Strain main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "F12_main_diet_hist_batchcorr.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F_shortterm_diet_batchcorr$top_table$P.Value, main = "F12: Diet main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "F12_main_strain_hist_batchcorr.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F_shortterm_strain_batchcorr$top_table$P.Value, main = "F12: Strain main effect (batchcorr)", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+```
+# Limma: non-batchcorr data
+Add batch variable directly in the design matrix. 
+```{r}
+metadata_F_shortterm <- metadata_F_shortterm %>%
+  dplyr::mutate(
+    diet   = factor(diet, levels = c("LFD", "FFMD")),
+    strain = factor(strain, levels = c("J", "Ntac"))
+  )
+
+levels(metadata_F_shortterm$diet)
+levels(metadata_F_shortterm$strain)
+
+table(metadata_F_shortterm$diet)   # LFD-12, FFMD-24
+table(metadata_F_shortterm$strain) # J-18, Ntac-18
+
+# create design matrix
+design_matrix <- model.matrix(~ diet + strain + beatbox_batch, data = metadata_F_shortterm)
+
+colnames(design_matrix)
+fit  <- limma::lmFit(prot_F_renamed_shortterm_filt_norm, design_matrix)
+fit2 <- limma::eBayes(fit)
+
+# use get_limma_results function
+limma_results_F_shortterm_diet   <- get_limma_results(fit2, "dietFFMD",   "F12: Diet")   # Total: 1113 - UP: 635 | DOWN: 478
+limma_results_F_shortterm_strain <- get_limma_results(fit2, "strainNtac", "F12: Strain") # Total 30 - UP: 16 | DOWN: 14
+
+# Diet histogram
+hist(limma_results_F_shortterm_diet$top_table$P.Value,   main = "F12: Diet main effect",   xlab = "P-value", col = "darkslategray4", breaks = 30)
+hist(limma_results_F_shortterm_strain$top_table$P.Value, main = "F12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+
+png(file.path("doc", "F12_main_diet_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F_shortterm_diet$top_table$P.Value, main = "F12: Diet main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+png(file.path("doc", "F12_main_strain_hist.png"), width = 5, height = 4, units = "in", res = 300, bg = "white")
+hist(limma_results_F_shortterm_strain$top_table$P.Value, main = "F12: Strain main effect", xlab = "P-value", col = "darkslategray4", breaks = 30)
+dev.off()
+
+```
+# Overlap (nonbatchcorr vs batchcorr hits)
+```{r}
+# Diet (F12)
+method1_batchcorr <- limma_results_F_shortterm_diet_batchcorr$sig$Protein
+method2           <- limma_results_F_shortterm_diet$sig$Protein
+common_proteins   <- intersect(method1_batchcorr, method2)
+
+unique_to_method2 <- setdiff(method2, method1_batchcorr)
+unique_to_method1 <- setdiff(method1_batchcorr, method2)
+
+protein_sets <- list(
+  batchcorr_proteins   = method1_batchcorr,
+  nonbatchcorr_proteins = method2
+)
+
+fit <- euler(protein_sets)
+
+euler_plot <- plot(
+  fit,
+  fills = list(fill = c("#91bfdb", "#f1a340"), alpha = 0.7),
+  labels = list(col = "black", fontface = "bold", cex = 1.2),
+  quantities = list(col = "black", fontface = "bold", cex = 1.2),
+  main = "Diet hits, F12"
+)
+
+ggsave(file.path("doc", "euler_plot_diethits_F.png"),
+       plot = euler_plot, width = 7, height = 5, dpi = 300, bg = "white")
+
+
+# Strain (F12)
+method1_batchcorr <- limma_results_F_shortterm_strain_batchcorr$sig$Protein
+method2           <- limma_results_F_shortterm_strain$sig$Protein
+common_proteins   <- intersect(method1_batchcorr, method2)
+
+unique_to_method2 <- setdiff(method2, method1_batchcorr)
+unique_to_method1 <- setdiff(method1_batchcorr, method2)
+
+protein_sets <- list(
+  batchcorr_proteins   = method1_batchcorr,
+  nonbatchcorr_proteins = method2
+)
+
+fit <- euler(protein_sets)
+
+euler_plot <- plot(
+  fit,
+  fills = list(fill = c("#91bfdb", "#f1a340"), alpha = 0.7),
+  labels = list(col = "black", fontface = "bold", cex = 1.2),
+  quantities = list(col = "black", fontface = "bold", cex = 1.2),
+  main = "Strain hits, F12"
+)
+
+ggsave(file.path("doc", "euler_plot_strainhits_F.png"),
+       plot = euler_plot, width = 7, height = 5, dpi = 300, bg = "white")
+
+```
+
+
+# check for individual protein
+```{r}
+# --- Step 1: Find a protein that is highly variable (no changes here) ---
+row_variances   <- apply(prot_F_renamed_shortterm_filt_norm, 1, var, na.rm = TRUE)
+protein_to_plot <- names(which.max(row_variances))
+
+# --- Step 2: Prepare data for plotting (no changes here) ---
+plot_df <- tibble(
+    new_sample_id = colnames(prot_F_renamed_shortterm_filt_norm),
+    before_corr   = as.numeric(prot_F_renamed_shortterm_filt_norm[protein_to_plot, ]),
+    after_corr    = as.numeric(prot_F_renamed_shortterm_filt_norm_batchcorr[protein_to_plot, ])
+  ) %>%
+  # Join with metadata to get batch and diet information
+  dplyr::left_join(metadata_F_shortterm, by = "new_sample_id") %>%
+  # Pivot to a long format suitable for ggplot
+  tidyr::pivot_longer(
+    cols = c("before_corr", "after_corr"),
+    names_to = "correction_status",
+    values_to = "expression"
+  )
+
+# --- Step 3: Create the boxplots WITH a visible legend ---
+
+# Plot for "Before Correction"
+plot_box_before <- ggplot(dplyr::filter(plot_df, correction_status == "before_corr"), 
+                          aes(x = beatbox_batch, y = expression, fill = beatbox_batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  ggtitle(paste("Before Correction:", protein_to_plot)) +
+  theme_bw() +
+  labs(x = "Beatbox Batch", y = "Normalized Expression", fill = "Beatbox Batch") +
+  theme(legend.position = "none")
+
+# Plot for "After Correction"
+plot_box_after <- ggplot(dplyr::filter(plot_df, correction_status == "after_corr"), 
+                         aes(x = beatbox_batch, y = expression, fill = beatbox_batch)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  ggtitle(paste("After Correction:", protein_to_plot)) +
+  theme_bw() +
+  labs(x = "Beatbox Batch", y = "Normalized Expression", fill = "Beatbox Batch") +
+  theme(legend.position = "none")
+
+# --- Step 4: Show plots side-by-side ---
+print(plot_box_before | plot_box_after)
+
+```
+# MA plot (Mean-difference plot)
+```{r}
+# Generate the MA plot for the 'dietFFMD' comparison
+# fit2 is your eBayes-moderated fit object
+plotMD(fit2, coef = "dietFFMD", status = decideTests(fit2), main = "M12: Diet (FFMD vs LFD)")
+
+# Add a horizontal line at y=0 for reference
+abline(h = 0, col = "grey")
+```
+
+
+# Volcano
+
+A statistical test like the one used in limma or edgeR doesn't just look at the average difference between groups; it looks at that difference relative to the variability within the groups.
+You will get a highly significant result (a tiny p-value) for a protein with a small fold change if:
+Its expression is extremely consistent among all replicates within a group 
+The model becomes extremely confident that the small shift between the groups is not random noise, but a real, consistent effect.
+```{r}
+# 1. Extract the main results data frame from your limma results list (F)
+volcano_data_diet <- limma_results_F_shortterm_diet$top_table
+
+# 2. Call your custom function
+p_diet <- create_volcano_plot(
+  df = volcano_data_diet,
+  title = "F12: Diet (FFMD vs LFD)",
+  top_n = 15
+)
+print(p_diet)
+
+# Strain
+volcano_data_strain <- limma_results_F_shortterm_strain$top_table
+p_strain <- create_volcano_plot(
+  df = volcano_data_strain,
+  title = "F12: Strain (Ntac vs J)",
+  top_n = 15
+)
+print(p_strain)
+
+################################# volcano with FC thresholds
+volcano_data_diet <- limma_results_F_shortterm_diet$top_table
+
+# FC > 1.5 (logFC = 0.585)
+p_diet_fc_1_5 <- create_volcano_plot_FC(
+  df = volcano_data_diet,
+  title = "F12: Diet (FFMD vs LFD) | FC > 1.5",
+  top_n = 15,
+  logfc_threshold = 0.585
+)
+print(p_diet_fc_1_5)
+
+# FC > 1.81 (logFC = 0.855)
+p_diet_fc_1_8 <- create_volcano_plot_FC(
+  df = volcano_data_diet,
+  title = "F12: Diet (FFMD vs LFD) | FC > 1.81",
+  top_n = 15,
+  logfc_threshold = 0.855
+)
+print(p_diet_fc_1_8)
+
+```
+# Heatmap
+```{r}
+# 1) Top 50 proteins (F)
+top_proteins_diet <- limma::topTable(fit2, coef = "dietFFMD", number = 50)
+
+# 2) Batch-corrected expression matrix for those proteins
+top_protein_data <- prot_F_renamed_shortterm_filt_norm_batchcorr[rownames(top_proteins_diet), ]
+
+# 3) Column annotations (Diet/Strain), aligned to the matrix columns
+annotation_col <- data.frame(
+  Diet   = metadata_F_shortterm$diet,
+  Strain = metadata_F_shortterm$strain,
+  row.names = metadata_F_shortterm$new_sample_id
+)
+annotation_col <- annotation_col[colnames(top_protein_data), , drop = FALSE]
+
+# 4) Heatmap
+pheatmap::pheatmap(
+  top_protein_data,
+  main = "Top 50 DE Proteins for Diet (F12)",
+  annotation_col = annotation_col,
+  scale = "row",
+  show_rownames = FALSE,
+  show_colnames = FALSE
+)
+
+```
+
+# Boxplot for a single protein
+```{r}
+limma_toptable_diet <- limma_results_F_shortterm_diet$top_table %>% 
+  tibble::column_to_rownames("Protein")
+
+# 1. Select your top significant protein from the diet results
+top_protein_name <- rownames(limma_toptable_diet)[1]
+top_protein_fdr  <- format(limma_toptable_diet[top_protein_name, "adj.P.Val"],
+                           scientific = TRUE, digits = 3)
+
+# 2. Create a data frame for this single protein
+plot_df <- data.frame(
+  Expression = as.numeric(prot_F_renamed_shortterm_filt_norm[top_protein_name, ]),
+  Diet       = metadata_F_shortterm$diet,
+  Strain     = metadata_F_shortterm$strain,
+  Batch      = metadata_F_shortterm$beatbox_batch
+)
+
+# 3. Create the boxplot
+ggplot(plot_df, aes(x = Diet, y = Expression, fill = Diet)) +
+  geom_boxplot(outlier.shape = NA) +
+  geom_jitter(width = 0.2, alpha = 0.7) +
+  facet_wrap(~ Strain) +
+  theme_bw(base_size = 14) +
+  labs(
+    title    = paste("Expression of Protein:", top_protein_name),
+    subtitle = paste("FDR (adjusted p-value) =", top_protein_fdr),
+    y = "Normalized Abundance (log2 scale)",
+    x = "Diet"
+  ) +
+  scale_fill_manual(values = c("LFD" = "blue", "FFMD" = "red"))
+
+```
+
